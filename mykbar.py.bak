@@ -1,0 +1,571 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Wed Feb  9 21:47:24 2022
+
+@author: William Zhuo
+"""
+# import shioaji as sj
+from typing import Optional
+import pandas as pd
+
+# from pandas import DataFrame
+from time import sleep
+from datetime import datetime
+
+# import sqlite3
+import json
+from pymongo import MongoClient
+
+###############################################
+# 取得0050和小台近月的合約
+##############################################
+
+
+def getContract(api, name, the_type):  # ='MXFR1'  # ='future'
+    if the_type == "future":
+        return api.Contracts.Futures[name]
+    elif the_type == "stock":
+        return api.Contracts.Stocks[name]
+    else:
+        print("Un-implemented type in getContract")
+
+
+# get future recent months contract
+
+
+def getFrontMonthContract(
+    api,
+    futureID,  # ='UDF'
+    removeR1R2=False,  # 回傳物件要用來抓報價的時候設False,物件要用來下單的時候設True
+    daysSwitch=7,
+):
+    l = list(api.Contracts.Futures[futureID])
+    # 移除近月和次月,近月次月只能抓報價無法下單
+    if removeR1R2:
+        for i in range(len(l) - 1, -1, -1):
+            # 近月和次月
+            if l[i].code[3] == "R":
+                l.pop(i)
+            else:
+                # 移除即將結算的合約,或者已結算的合約
+                delivery_date = datetime.datetime.strptime(
+                    l[i].delivery_date, "%Y/%m/%d"
+                ).date()
+                today = get_today()
+                diffdays = (delivery_date - today).days
+                if diffdays <= max(daysSwitch, 0):
+                    l.pop(i)
+    len_l = len(l)
+    min_delivery_month = "99999999999"
+    min_i = 0
+    min_id = 0
+    for i in range(0, len_l, 1):
+        if l[i].code == futureID + "R1":
+            min_delivery_month = l[i].delivery_month
+            min_i = i
+            min_id = l[i].code
+            break
+        valA = int(l[i].delivery_month)
+        valB = int(min_delivery_month)
+        if valA < valB:
+            min_delivery_month = l[i].delivery_month
+            min_i = i
+            min_id = l[i].code
+    ret = api.Contracts.Futures[min_id]
+    return ret
+
+
+#######################################
+# 用datetime取得兩年前/一年前/昨天的日期
+#######################################
+
+
+def get_today():
+    return datetime.date.today()
+
+
+def sub_N_Days(days: int, date=datetime.today()):  # =1
+    return date - datetime.timedelta(days)
+
+
+def add_N_Days(days, date=datetime.today()):  # =1
+    return date + datetime.timedelta(days)
+
+
+#######################################
+# 給定日期時間範圍，回傳1分k的dataframe. exclude the data when mkt is not close yet.
+#######################################
+def getKbars(
+    api,
+    contract,
+    start,  # ='2022-01-01'
+    end  # ='2022-01-20'
+    # set longer timeout if date range is wide
+    ,
+    timeout=100000,
+):
+    def remove_illegal_time(df):
+        # futures
+        cond_Sat = ~((df.index.weekday == 5) * (df.index.hour > 5))
+        cond_Sun = df.index.weekday != 6
+        cond_Mon = ~((df.index.weekday == 0) * (df.index.hour < 8))
+        df = df[cond_Sat * cond_Sun * cond_Mon]
+        return df
+
+    # 取得kbars資料
+    if timeout > 0:
+        kbars = api.kbars(contract, start=start, end=end, timeout=timeout)
+    else:
+        kbars = api.kbars(contract, start=start, end=end)
+
+    # 把0050的tick轉成dataframe，並且印出最前面的資料
+    df = pd.DataFrame({**kbars})  # 轉成dataframe
+    # converting the values in the column named 'ts' to datetime format
+    df.ts = pd.to_datetime(df.ts)
+    new_column_names = {col: col.lower() for col in df.columns}
+    df = df.rename(columns=new_column_names)
+    
+    # have to set index for func remove_illegial_time -> pd.index.weekday
+    df.index = pd.to_datetime(df.ts)
+
+    df = df.groupby(df.index).first()
+    df = df.drop(columns="ts")
+    df.drop(df.tail(1).index, inplace=True)
+    df = remove_illegal_time(df)
+    sleep(1)
+    return df
+
+
+#######################################
+# 給定日期時間範圍，回傳ticks的dataframe. include historic and current in transaction data
+#######################################
+
+
+def getTicks(
+    api,
+    contract,
+    start,  # ='2022-01-01'
+    end,  # ='2022-01-20'
+    timeout=100000,
+    Enable_print=False,
+):
+
+    list_ticks = []
+    enddate = datetime.datetime.strptime(end, "%Y-%m-%d").date()
+    day = datetime.datetime.strptime(start, "%Y-%m-%d").date()
+    while day != enddate:
+        # 取得ticks
+        if timeout > 0:
+            ticks = api.ticks(contract=contract, date=str(day), timeout=timeout)
+        else:
+            ticks = api.ticks(contract=contract, date=str(day), timeout=timeout)
+        df_ticks = pd.DataFrame({**ticks})  # 轉成dataframe
+
+        # converting the values in the column named 'ts' to datetime format
+        df_ticks.ts = pd.to_datetime(df_ticks.ts)
+        df_ticks.index = pd.to_datetime(df_ticks.ts)
+        df_ticks = df_ticks.drop(columns="ts")
+
+        # df_ticks.index = pd.to_datetime(df_ticks.ts)
+        df_ticks = df_ticks.groupby(df_ticks.index).first()
+        list_ticks.append(df_ticks)
+        # 加一天
+        day = day + datetime.timedelta(days=1)
+        if Enable_print:
+            print(day)
+        # CD 50 miliseconds,避免抓太快被永豐ban掉
+        sleep(0.05)
+    if len(list_ticks) > 0:
+        df_ticks_concat = pd.concat(list_ticks)
+        df_ticks_concat = df_ticks_concat.drop(columns="ts")
+    else:
+        df_ticks_concat = []
+    return df_ticks_concat
+
+
+#########################################################
+# 檢查Table存在與否
+###########################################################
+# CheckTableExist
+
+
+def checkTableExist(dbname, tablename):  # ='kbars.db'  # ='\'MXFR1\''
+    client = MongoClient()
+    db = client[dbname]
+    collection_names = db.list_collection_names()
+    if tablename in collection_names:
+        client.close()
+        return True
+    else:
+        client.close()
+        return False
+
+
+# 用來看最後一筆日期, ts column is datetime
+
+
+def checkLastTs(dbname, tablename):  # ='kbars.db'  # ='\'MXFR1\''
+    client = MongoClient()
+    db = client[dbname]
+    collection = db[tablename]
+    # Find the document with the maximum ts value
+    max_ts_document = collection.find_one({}, sort=[("ts", -1)])
+    client.close()
+    if max_ts_document:
+        max_ts_value = max_ts_document["ts"]
+        return max_ts_value
+    else:
+        return None
+
+
+#######################################
+# 更新資料庫的kbars. get 1minute k data and write to kbars database
+############################################
+
+
+# covert to datetime.date format
+def convert2Date(t):
+    if type(t) == datetime.date:
+        # Already a datetime.date object, return it directly
+        return t
+    elif type(t) == datetime.datetime:
+        # Convert datetime object to date
+        return t.date()
+    else:
+        # Try converting from string format (if possible)
+        try:
+            return datetime.datetime.strptime(
+                str(t), "%Y-%m-%d"
+            ).date()  # Assuming YYYY-MM-DD format
+        except ValueError:
+            print("Couldnt convert, return None!")
+            return None
+
+
+def backFillKbars(
+    api, contractObj, collectionName, start, end=datetime.today(), period="1m"
+):
+    kbars = pd.DataFrame()
+
+    start = convert2Date(start)
+    end = convert2Date(end)
+
+    dbName = "kbars"
+    # push kbars data to table
+    # name = collectionName
+    tbl_exist = checkTableExist(dbname=dbName, tablename=collectionName)
+    client = MongoClient()
+    db = client[dbName]
+    collection = db[collectionName]
+    # the tbl exists
+    if tbl_exist:
+        ret = checkLastTs(dbname=dbName, tablename=collectionName)
+        # lastdatetime = datetime.datetime.strptime(ret, '%Y-%m-%d %H:%M:%S')
+        lastdatetime = datetime.datetime.fromtimestamp(ret / 1000)
+        start = add_N_Days(date=lastdatetime.date(), days=1)  # date of last data
+        end = datetime.date.today()
+        # if start < end:
+        #     # push start~end
+        #     kbars = getKbars(api, contractObj, start=str(start), end=str(end))
+        # else:
+        #     pass
+    # the tbl isn't exist
+    else:
+        # end=yesterday
+        end = sub_N_Days(days=1)
+        # kbars = getKbars(api, contractObj, start=str(start), end=str(yesterday))
+
+    if start < end:
+        kbars = getKbars(api, contractObj, start=str(start), end=str(end))
+    if not kbars.empty:
+        kbars = kbars.drop_duplicates()
+        kbars = kbars.dropna()
+        if period == "1d":
+            kbars = resampleKbars(kbars, period)
+        data = json.loads(kbars.reset_index().to_json(orient="records"))
+        collection.insert_many(data)  # Insert new documents
+    client.close()
+
+
+# def backFillKbars(api, contractObj, collectionName, start, end=datetime.date.today()):
+#     start_date = convert2Date(start)
+#     end_date = convert2Date(end)
+
+#     start_dt = datetime.datetime(start_date.year, start_date.month, start_date.day)
+#     end_dt = datetime.datetime(end_date.year, end.month, end_date.day)
+
+#     start_ts = int(start_dt.timestamp() * 1000)
+#     end_ts = int(end_dt.timestamp() * 1000)
+
+#     query = {"ts": {"$gte": start_ts, "$lte": end_ts}}
+
+#     # end = end.date()
+
+#     dbName = "kbars"
+#     # push kbars data to table
+#     # name = collectionName
+#     tbl_exist = checkTableExist(dbname=dbName, tablename=collectionName)
+#     client = MongoClient()
+#     db = client[dbName]
+#     collection = db[collectionName]
+#     # the tbl exists
+#     if tbl_exist:
+#         # ret = checkLastTs(dbname=dbName, tablename=collectionName)
+#         # lastdatetime = datetime.datetime.fromtimestamp(ret/1000)
+
+#         # Get existing data (sorted by date for efficiency, assuming "date" field)
+#         cursor = collection.find(query).sort("ts")
+#         data = list(cursor)
+#         # Get min and max dates from existing data (if any)
+#         min_date = None
+#         max_date = None
+#         if len(data) > 0:
+#             min_int = data[0]["ts"]
+#             max_int = data[-1]["ts"]
+#             min_date = datetime.datetime.fromtimestamp(min_int / 1000).date()
+#             max_date = datetime.datetime.fromtimestamp(max_int / 1000).date()
+
+#             # min_dt = datetime.datetime.fromtimestamp(min_ts/1000.0)
+#             # max_dt = datetime.datetime.fromtimestamp(max_ts/1000.0)
+#             # min_date = min_dt.date()
+#             # max_date = max_dt.date()
+#             # format_str = "%Y-%m-%d %H:%M:%S"  # Example format (adjust as needed)
+#             # min_str=min_dt.strftime(format_str)
+#             # max_str=max_dt.strftime(format_str)
+
+#         # Check and fetch data before first record (single call)
+#         if start_date < min_date:
+#             # Prepare to collect data to insert
+#             data_to_insert = []
+#             # missing_dates = pd.date_range(str(start), str_min - pd.Timedelta(days=1))
+#             kbars = getKbars(
+#                 api,
+#                 contractObj,
+#                 start=str(start_date),
+#                 # end=str((min_dt - datetime.timedelta(days=1)).date()),
+#                 end=str(min_date - datetime.timedelta(days=1)),
+#             )
+#             for index, row in kbars.iterrows():
+#                 # date = row["ts"]
+#                 # date_date = datetime.datetime.fromtimestamp(row.ts.timestamp()).date()
+#                 # if start_date <= date_date <= end_date:  # Validate within desired range
+#                 data_to_insert.append(row.to_dict())
+
+#             # Insert before the first existing document (assuming you have an insert_one method)
+#             if data_to_insert:
+#                 for data in reversed(
+#                     data_to_insert
+#                 ):  # Insert in reverse order to maintain original order
+#                     collection.insert_one(data)
+
+#         # Check and fetch data after last record (single call)
+#         if end_date > max_date:
+#             data_to_insert = []
+#             # missing_dates = pd.date_range(max_date + pd.Timedelta(days=1), end)
+#             kbars = getKbars(
+#                 api,
+#                 contractObj,
+#                 start=str(max_date + datetime.timedelta(days=1)),
+#                 end=str(end_date),
+#             )
+#             for index, row in kbars.iterrows():
+#                 # date_date = datetime.datetime.fromtimestamp(row.ts.timestamp()).date()
+#                 # if start_date <= date_date <= end_date:
+#                 data_to_insert.append(row.to_dict())
+#             # Insert after the last existing document (assuming you have an insert_many method supporting ordered insertion)
+#             if data_to_insert:
+#                 collection.insert_many(
+#                     data_to_insert, ordered=True
+#                 )  # Optional: Maintain order for time-series data
+
+#         # Insert missing data points (if any)
+#         if data_to_insert:
+#             print(f"Inserted missing data for {len(data_to_insert)} dates.")
+#         else:
+#             print(f"No missing data found for the specified date range.")
+#     # the tbl isn't exist
+#     else:
+#         yesterday = sub_N_Days(days=1)
+#         kbars = getKbars(api, contractObj, start=str(start), end=str(yesterday))
+#         data = json.loads(kbars.reset_index().to_json(orient="records"))
+#         collection.insert_many(data)  # Insert new documents
+#     # create table
+#     # Convert DataFrame to list of dictionaries (one dictionary per row)
+
+#     # data = kbars.to_dict(orient='records') index ts won't be kept
+
+#     # Replace existing documents in MongoDB collection with new data
+#     # collection.delete_many({})  # Delete existing documents
+
+#     client.close()
+
+
+#######################################
+# 更新資料庫的ticks. get tick data and write to ticks database
+############################################
+
+
+def backFillTicks(api, contractObj, collectionName, start, end):
+    today = get_today()
+    # for 100ma needs at least 17days' sample data coz 6hrs trading hrs per day
+    ten_days_ago = sub_N_Days(days=20)
+    one_years_ago = sub_N_Days(days=365)
+    yesterday = sub_N_Days(days=1)
+
+    dbName = "ticks"  # 這個應該放在function
+    # push kbars data to table
+    name = collectionName
+    db_exist = checkTableExist(dbname=dbName, tablename=name)
+    client = MongoClient()
+    db = client[dbName]
+    collection = db[collectionName]
+
+    # the tbl exists
+    if db_exist:
+        ret = checkLastTs(dbname=dbName, tablename=collectionName)
+        # lastdatetime = datetime.datetime.strptime(str(ret), '%Y-%m-%d %H:%M:%S.%f')
+        lastdatetime = datetime.datetime.fromtimestamp(ret / 1000)
+        start = add_N_Days(date=lastdatetime.date(), days=1)  # date of last data
+        end = today
+        if start < end:
+            ticks = getTicks(
+                api, contractObj, start=str(start), end=str(end), Enable_print=True
+            )
+            # Convert DataFrame to list of dictionaries (one dictionary per row)
+            data = json.loads(ticks.reset_index().to_json(orient="records"))
+            # Insert data into MongoDB collection
+            collection.insert_many(data)
+        else:
+            pass
+    else:
+        # ticks = getTicks(api, contractObj, start=str(
+        #     one_years_ago), end=str(yesterday), Enable_print=True)
+
+        ticks = getTicks(
+            api,
+            contractObj,
+            start=str(ten_days_ago),
+            end=str(yesterday),
+            Enable_print=True,
+        )
+
+        # create table
+        # Convert DataFrame to list of dictionaries (one dictionary per row)
+        data = json.loads(ticks.reset_index().to_json(orient="records"))
+
+        # Replace existing documents in MongoDB collection with new data
+        collection.delete_many({})  # Delete existing documents
+        collection.insert_many(data)  # Insert new documents
+
+    client.close()
+
+
+# shioaji data into dataframe
+
+
+def sjBarsToDf(sjBars):
+    dfBars = pd.DataFrame({**sjBars})  # 轉成dataframe
+    # dfBars.index = pd.to_datetime(dfBars.ts)
+    dfBars.ts = pd.to_datetime(dfBars.ts)
+    dfBars = dfBars.groupby(dfBars.index).first()
+    return dfBars
+
+
+# convert ticks's dataframe into 1minute k dataframe
+
+
+def ticksTo1mkbars(ticks):
+    period = "1min"
+    kbars_out = pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
+    kbars_out["Open"] = (
+        ticks["close"].resample(period).first()
+    )  # 區間第一筆資料為開盤(Open)
+    kbars_out["High"] = ticks["close"].resample(period).max()  # 區間最大值為最高(High)
+    kbars_out["Low"] = ticks["close"].resample(period).min()  # 區間最小值為最低(Low)
+    kbars_out["Close"] = (
+        ticks["close"].resample(period).last()
+    )  # 區間最後一個值為收盤(Close)
+    kbars_out["Volume"] = ticks["volume"].resample(period).sum()  # 區間所有成交量加總
+    kbars_out = kbars_out.dropna()
+    return kbars_out
+
+
+def resampleKbars(kbars: pd.DataFrame, period: str = "1d") -> pd.DataFrame:
+    # period:1m => 1 month
+    # period:1min => 1 minute
+
+    # Assuming kbars['Open'] is a Series
+    # Convert the index to a datetime-like index if it's not already
+    # Check the current data type of the index
+    # print(kbars.index.dtype)
+    # # ???!!! this line added by me
+    # kbars.index = pd.to_datetime(kbars.index)
+    # # Check the current data type of the index
+    # print(kbars.index.dtype)
+    kbars_out = pd.DataFrame({})
+    if not kbars.empty:
+        # 區間第一筆資料為開盤(Open)
+        kbars_out["open"] = kbars["open"].resample(period).first()
+        # 區間最大值為最高(High)
+        kbars_out["high"] = kbars["high"].resample(period).max()
+        # 區間最小值為最低(Low)
+        kbars_out["low"] = kbars["low"].resample(period).min()
+        # 區間最後一個值為收盤(Close)
+        kbars_out["close"] = kbars["close"].resample(period).last()
+        # 區間所有成交量加總
+        kbars_out["volume"] = kbars["volume"].resample(period).sum()
+        kbars_out = kbars_out.dropna()
+
+    return kbars_out
+
+
+##################################
+# 從資料庫讀取kbars
+#########################################
+
+
+def readFromDB(
+    dbName: str,
+    collectionName: str,
+    start: Optional[datetime] = None,
+    end: Optional[datetime] = None,
+):
+    # dbName = 'kbars'
+    client = MongoClient()
+    db = client[dbName]
+    collection = db[collectionName]
+
+    # Retrieve data from MongoDB collection
+    if start is None and end is None:
+        query = {}  # Retrieve all data
+    else:
+        if start is not None:
+            # convert datetime.date to ts
+            start_ts = int(
+                datetime.datetime(start.year, start.month, start.day).timestamp() * 1000
+            )
+            # start_ts = int(start.timestamp() * 1000)
+        if end is not None:
+            end_ts = int(
+                datetime.datetime(end.year, end.month, end.day).timestamp() * 1000
+            )
+            # end_ts = int(end.timestamp() * 1000)
+        query = {"ts": {"$gte": start_ts, "$lte": end_ts}}
+
+    cursor = collection.find(query)
+
+    # The return type of a find query in MongoDB is a cursor,
+    # which is a database object that provides a stream of documents
+    # Converting the Cursor to Dataframe, 1st, we convert the cursor to the list of dictionary.
+    # list_cur = pd.DataFrame(list(cursor))
+    df = pd.DataFrame(cursor)
+    if not df.empty:
+        # unit=ms is requied for the conversation.  if no unit='ms', it returns 1970!
+        df = df.rename(columns={"Date": "ts"})
+        df.ts = pd.to_datetime(df.ts, unit="ms")
+        df.index = pd.DatetimeIndex(df["ts"])
+        # df = df.drop(columns="ts")
+        df.columns = [col.lower() for col in df.columns]
+
+    client.close()
+    return df

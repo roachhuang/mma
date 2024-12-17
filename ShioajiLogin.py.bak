@@ -1,0 +1,47 @@
+import shioaji as sj
+
+print(sj.__version__)
+
+api = 0
+person_id = 'A125841482'  # 身分證字號
+api_key = "7ctn2iRqnbcC5k7X2tkxHZEcBUVNbsLHhmWYSPqA3Nbr"
+secret_key = "8o7DB5fm8fBuK97JdXoXMQoWQTKoykLTgFdfsoCTYN7j"
+
+CA_passwd = 'A125841482'
+
+
+def shioajiLogin(simulation=False):
+    global api
+    global api_key
+    global secret_key
+    global CA_passwd
+    global person_id
+    api = sj.Shioaji(simulation=simulation)
+
+    if (person_id == ''):
+        person_id = input("Please input personal id:\n")
+    if (api_key == ''):
+        api_key = input("Please input api_key:\n")
+    if (secret_key == ''):
+        secret_key = input("Please input secret_key:\n")
+    if (CA_passwd == ''):
+        CA_passwd = input("Please input CA PASSWORD:\n")
+    api.login(
+        api_key=api_key,
+        secret_key=secret_key,
+        contracts_timeout=10000,
+        # contracts_cb=lambda security_type: print(
+        #      f"{repr(security_type)} fetch done.")
+    )
+
+    CA='c:\ekey\\551\\'+person_id+'\\S\\Sinopac.pfx'
+    # CA = '/home/roach/ekey/551/A125841482/S/Sinopac.pfx'
+    result = api.activate_ca(
+        ca_path=CA,
+        ca_passwd=CA_passwd,
+        person_id=person_id,
+    )
+    print(result, api.usage(), api.get_ca_expiretime("Person ID"))
+    return api
+
+# shioajiLogin(simulation=False)

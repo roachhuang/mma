@@ -1,0 +1,215 @@
+"""
+The capital asset pricing model (CAPM) is very widely used and is considered to be a very fundamental concept in investing. It determines the link between the risk and expected return of assets, in particular stocks.
+What is the CAPM equation?
+
+The CAPM is defined by the following formula:
+
+where (i) is an individual stock
+
+r(i)(t) = return of stock (i) at time (t)
+
+β(i) = beta of (i)
+
+r(m)(t) = return of market (m) at time (t)
+
+alpha(i)(t) = alpha of (i) at time (t)
+
+β of a stock (i) tells us about the risk the stock will add to the portfolio in comparison to the market. β=1 means that the stock is in line with the market.
+
+According to CAPM, the value of alpha is expected to be zero and that it is very random and cannot be predicted.
+
+The equation seen above is in the form of y = mx+b and therefore it can be treated as a form of linear regression.
+
+
+it explains how the market impacts individual stock prices and it also provide a mathematical framework
+for hedge fun investing.
+"""
+
+from sklearn.linear_model import LinearRegression
+from sklearn.preprocessing import normalize
+import pandas as pd
+
+# import pandas_datareader as web
+import datetime
+import matplotlib.pyplot as plt
+from ShioajiLogin import shioajiLogin
+import numpy as np
+
+# %matplotlib inline
+import yfinance as yf
+
+import os
+import sys
+
+# Get the user's home directory path
+home_dir = os.path.expanduser("~")
+# Construct the path to get_data.py
+helpers_dir = os.path.join(home_dir, "projects/helpers")
+# Add the helper directory to sys.path (optional, but recommended for absolute paths)
+if helpers_dir not in sys.path:
+    sys.path.append(helpers_dir)
+
+import mykbar as kb
+
+api = shioajiLogin(simulation=False)
+symbol = "3703"
+contract = kb.getContract(api, symbol=symbol, the_type="stock")
+start = kb.sub_N_Days(days=15 * 365)
+end = datetime.datetime.today().date()
+
+start_str = "2019-01-23 09:01:00"
+end_str = "2024-05-17 13:26:00"
+
+date_format = "%Y-%m-%d %H:%M:%S"
+
+start_dt = datetime.datetime.strptime(start_str, date_format)
+end_dt = datetime.datetime.strptime(end_str, date_format)
+
+kb.backFillKbars(
+    collectionName=symbol,
+    start=start,
+    interval="1d",
+)
+df_3703 = kb.readFromDB(dbName="1d", collectionName=symbol, start=start_dt, end=end_dt)
+
+symbol = "001"
+contract = api.Contracts.Indexs.TSE[symbol]
+kb.backFillKbars(
+    collectionName=symbol,
+    start=start,
+    interval="1d",
+)
+df_001 = kb.readFromDB("1d", collectionName=symbol, start=start_dt, end=end_dt)
+
+
+#######################################
+# need to make sure df_001 has index of Date
+dates = pd.date_range(start_str, end_str)
+
+
+def get_data(symbols, dates):
+    df = pd.DataFrame(index=dates)
+    if "001" not in symbols:  # add SPY fore reference, if absent
+        symbols.insert(0, "001")
+    for symbol in symbols:
+        df_temp = pd.read_csv(
+            index_col="Date", parse_dates=True, usecols=["Date", "Adj Close"]
+        )
+        df_temp = df_temp.reanme(columns={"Adj Close": symbol})
+        df = df.join(df_temp)
+        if symbol == "001":
+            df = df.drapna(subset=["001"])
+
+
+df = get_data(symbols=["001", "2330"], dates=dates)
+df.fillna(method="ffill", inplace=True)
+df.fillna(method="bfill", inplace=True)
+# plot_data(df_data)
+# the informative way is to compare 2 or more stocks daily return together in histogram chart
+# gaussian distruibtion
+
+daily_rets = (df / df.shift(1)) - 1
+plt.plot_data(daily_rets)
+# histogram plotting
+daily_rets["001"].hist(bins=20, label="001")
+daily_rets["2330"].hist(bins=20, label="TSMC")
+plt.legend(loc="upper right")
+mean = daily_rets["001"].mean()
+std = daily_rets["001"].std()
+plt.axvline(mean, color="w", linestyle="dashed", linewidth=2)
+plt.axvline(std, color="r", linestyle="dashed", linewidth=2)
+plt.axvline(-std, color="r", linestyle="dashed", linewidth=2)
+plt.show()
+
+# scatterplot 001 vs tsmc
+daily_rets.plot(kind="scatter", x="001", y="2330")
+# ployfit needs x corrdinate and y corrdinate to fit the line. y denotes the degree of a func
+# it returns 2 things, the 1st is the polynomial coefficient and the 2nd is the intercept(alpha). since degree is 1, it'd be the form y=wx+b
+beta, alpha = np.ployfit(daily_rets["001"], daily_rets["2330"], 1)
+# y=wx*b, where x = daily_rets['001']
+plt.plot(daily_rets["001"], beta * daily_rets["001"] + alpha, "-", color="r")
+
+# calculate correlation coefficient
+daily_rets.corr(method="pearson")
+
+# higher return and lower volatitiy(std deviation) is better
+"""
+sharpe ratio: risk adjusted return
+SR also considers risk free rate of return (i.e., interest rate)
+"""
+#######################################
+
+
+first_date = df_001["ts"].iloc[0]  # Access first timestamp using iloc
+last_date = df_001["ts"].iloc[-1]  # Access last timestamp using iloc
+
+# Format dates (assuming datetime format)
+first_date = first_date.strftime("%Y-%m-%d %H:%M:%S")  # Customize format if needed
+last_date = last_date.strftime("%Y-%m-%d %H:%M:%S")
+
+print(f"001 First Document Date: {first_date}")
+print(f"Last Document Date: {last_date}")
+
+# twIdx=df_001.close
+# twIdx.head(2)
+# twIdx.tail(2)
+# df_spy = web.DataReader('SPY','yahoo',start,end)
+# df_spy.head()
+# df_fb = web.DataReader('FB','yahoo',start,end)
+# df_fb.head()
+
+# Up-sample the shorter DataFrame (df_stock1) to match the longer one (df_stock2)
+# df_3703_upsampled = df_3703.reindex(df_001.index, fill_value='bfill')  # Use 'ffill' or 'bfill' for imputation
+
+# down-sample
+df_001_downsample = df_001.iloc[: len(df_3703)]
+
+# df_3703_filtered= df_3703_upsampled[df_3703_upsampled['close'].apply(pd.api.types.is_number)]
+
+# df_3703["close"].plot(label="3703")
+# plt.show()
+# df_001_downsample["close"].plot(label="IDX")
+
+# # Add labels and title (optional)
+# plt.xlabel('Date/Time')
+# plt.ylabel('Price')
+# plt.title('Closing Prices')
+# plt.legend()
+# plt.show()
+
+# df_3703 = normalize(df_3703)
+# df_001 = normalize(df_001)
+
+df_3703["daily_ret"] = df_3703["close"].pct_change(1)
+df_001_downsample["daily_ret"] = df_001_downsample["close"].pct_change(1)
+
+df_3703 = df_3703.drop(df_3703.index[0])
+df_001_downsample = df_001_downsample.drop(df_001_downsample.index[0])
+
+y = np.array(df_3703.daily_ret)
+x = np.array(df_001_downsample.daily_ret).reshape((-1, 1))
+x_norm = normalize(x)
+
+model = LinearRegression().fit(x_norm, y)
+beta = model.coef_
+alpha = model.intercept_
+print("Beta:", model.coef_)
+
+
+# LR = stats.linregress(
+# df_3703["daily_ret"].iloc[1:], df_001_downsample["daily_ret"].iloc[1:]
+# )
+
+# beta, alpha, r_val, p_val, std_err = LR
+# plt.scatter(df_3703['daily_ret'],df_001_downsample['daily_ret'])
+plt.scatter(beta, alpha)
+plt.title(label="Captial Asset Pricing Model")
+# # Add a vertical line at x=5 (red, dashed line)
+# plt.axvline(x=0, color="red", linestyle="--", label="Vertical Line")
+# plt.axvline(x=1, color="black", linestyle="--", label="Vertical Line")
+
+# plt.axhline(y=0, color="blue", linestyle="--", label="Horizontal Line")
+# # Add labels and title
+# plt.xlabel("X-axis")
+# plt.ylabel("Y-axis")
+plt.show()
