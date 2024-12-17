@@ -1,3 +1,17 @@
+github: 
+    cd C:\mma
+    git init
+    git add .
+    git commit -m "Initial commit"
+    git remote add origin https://github.com/roachhuang/mma.git
+    git branch -M main
+    git push -u origin main
+# ssh located at ~/.ssh/
+If the repository already contains a README or other files, you may need to pull those changes first:
+git pull origin main --allow-unrelated-histories
+git push -u origin main
+
+
 virtualenv
 https://hackmd.io/ouzfodBiR7asRZspTXdq2Q
 
