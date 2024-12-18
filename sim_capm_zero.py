@@ -21,16 +21,22 @@ from threading import Lock
 from shioaji import BidAskSTKv1, Exchange, TickSTKv1
 
 ####################################################
-import os
+# import os
+from pathlib import Path
 import sys
 
-# Get the user's home directory path
-home_dir = os.path.expanduser("~")
-# Construct the path to get_data.py
-helpers_dir = os.path.join(home_dir, "projects/helpers")
-# Add the helper directory to sys.path (optional, but recommended for absolute paths)
-if helpers_dir not in sys.path:
-    sys.path.append(helpers_dir)
+# # Get the user's home directory path
+# home_dir = os.path.expanduser("~")
+# # Construct the path to get_data.py
+# helpers_dir = os.path.join(home_dir, "projects//helpers")
+# # Add the helper directory to sys.path (optional, but recommended for absolute paths)
+# if helpers_dir not in sys.path:
+#     sys.path.append(helpers_dir)
+
+# Get the helpers directory
+helpers_dir = Path(__file__).resolve().parent.parent / "helpers"
+# Add to sys.path
+sys.path.insert(0, str(helpers_dir))
 ######################################################
 
 from ShioajiLogin import shioajiLogin, get_snapshots
@@ -60,8 +66,8 @@ def calculate_allocate(total_money, stock_prices, weights):
     scaled_total_money = total_money * scale_factor
 
     # Reallocate money based on scaled total money and original weights
-    g_upperid_shares = (
-        int(scaled_total_money * weights[g_upperid]) // stock_prices[g_upperid]
+    g_upperid_shares = int(
+        scaled_total_money * weights[g_upperid] // stock_prices[g_upperid]
     )
     return {
         g_upperid: g_upperid_shares,
@@ -114,8 +120,7 @@ class GridBot:
         self.logging = logging
         self.api.set_order_callback(self.order_cb)
 
-    def get_position_qty(self, symbol):
-        self.api.update_status(self.api.stock_account)
+    def get_position_qty(self, symbol)->int:
         positions = self.api.list_positions(self.api.stock_account, unit="Share")
         quantity = next(
             (position.quantity for position in positions if position.code == symbol),
@@ -279,24 +284,27 @@ class GridBot:
 # main fn
 ########################################################################################################################
 ########################################################################################################################
+
 g_upperid = "2330"
 # g_upperid = "0052"
-g_lowerid = "0050"
+g_lowerid = "00664R"
 symbols = [g_upperid, g_lowerid]
-dynamic_sell_threshold = 40
+
 
 def main():
+    dynamic_sell_threshold = 40
     # fees = 0.385 / 100
     fees = 0.4 / 100
     total_amount = 30000
+
     # weights = {g_upperid: 0.46772408, g_lowerid: 0.53227592}
-    weights = {g_upperid: 0.42553244, g_lowerid: 0.57446756}
+    weights = {g_upperid: 0.425652829531973, g_lowerid: 0.5743471704680267}
     mutexDict = {symbols[0]: Lock(), symbols[1]: Lock()}
     cooldown = 60
     # sleep to n seconds
     til_second = 20
 
-    api = shioajiLogin(simulation=True)
+    api = shioajiLogin(simulation=False)
 
     # 創建交易機器人物件
     logging.basicConfig(
@@ -306,10 +314,12 @@ def main():
     )
 
     bot = GridBot(api, logging)
-  
+
     bot.pos = {symbol: bot.get_position_qty(symbol) for symbol in symbols}
     print(bot.pos)
+    # todo: maybe just one stock has value, so need to save taken_profit in case not all stocks
     if any(bot.pos.values()):
+        # bought_prices.p should be located on folder mma_shioaji_GridBot 
         bot.bought_price = misc.pickle_read("bought_prices")
         print("bought price:", bot.bought_price)
         bot.taken_profit = 0
@@ -359,7 +369,7 @@ def main():
                 if now.minute % 3 == 0:
                     pass
                 print("-" * 80)  # Optional separator
-
+            # reconfirm, maybe not necessary
             bot.pos = {
                 symbol: bot.get_position_qty(symbol) for symbol in symbols
             }  # key: value
@@ -381,8 +391,12 @@ def main():
     #################################################################################
     # empty hand, ask if want to buy
     elif misc.get_user_confirmation(question="buy"):
+        snapshots = get_snapshots(api, symbols)
         shares_to_buy = calculate_allocate(total_amount, snapshots, weights)
-        print(f"shares_to_buy:{shares_to_buy}")
+
+        print(f"shares_to_buy:{shares_to_buy}, @price {snapshots}")
+        
+        # always break at here to find a good pair of prices before submitting!!!
         for symbol in symbols:
             bot.trades[symbol] = bot.buy(
                 symbol=symbol,
@@ -390,15 +404,18 @@ def main():
                 price=snapshots[symbol],
             )
 
-        try:           
-            while not all(trade.status.status =='Filled' for trade in bot.trades.values()):
+        try:
+            while not all(
+                trade.status.status == "Filled" for trade in bot.trades.values()
+            ):
                 for trade in bot.trades.values():
+                    # trade status will be updated automatically
                     api.update_status(api.stock_account, trade=trade)
-                    print(f'{trade.contract.code}/{trade.status.status}')
-                   
+                    print(f"{trade.contract.code}/{trade.status.status}")
+
             misc.pickle_dump("bought_prices", snapshots)
             api.logout
-            
+
         except KeyboardInterrupt:
             print("\n my Ctrl-C detected. Exiting gracefully...")
             api.logout()

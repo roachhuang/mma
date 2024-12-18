@@ -16,7 +16,7 @@ import sys
 # Get the user's home directory path
 home_dir = os.path.expanduser("~")
 # Construct the path to get_data.py
-helpers_dir = os.path.join(home_dir, "projects/helpers")
+helpers_dir = os.path.join(home_dir, "projects\helpers")
 # Add the helper directory to sys.path (optional, but recommended for absolute paths)
 if helpers_dir not in sys.path:
     sys.path.append(helpers_dir)
@@ -104,7 +104,6 @@ pos = {symbol: pos(symbol=symbol) for symbol in symbols}
 # trade.order.id
 orders = {}
 trades={}
-
 
 for symbol in symbols:   
     # print(f"Stock {symbol} bought quantity: {qty[symbol]}")
