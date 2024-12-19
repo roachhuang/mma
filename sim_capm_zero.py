@@ -11,7 +11,6 @@ from shioaji.constant import (
     StockOrderCond,
     STOCK_ORDER_LOT_INTRADAY_ODD,
     STOCK_ORDER_LOT_COMMON,
-    
 )
 
 import logging
@@ -100,7 +99,7 @@ def calculate_allocate(total_money, snapshots, weights):
     }
 
 
-def calculate_profit(buy_price: float, sell_price: float, quantity: int) -> int:    
+def calculate_profit(buy_price: float, sell_price: float, quantity: int) -> int:
     # break even: 0.208% after discount
     discount = 0.38
     service_fee = float(0.001425 * discount)
@@ -152,13 +151,15 @@ class GridBot:
         self.logging = logging
         self.api.set_order_callback(self.order_cb)
 
-    def get_position_qty(self, symbol)->int:
+    def get_position_qty(self, symbol) -> int:
         try:
-            positions = self.api.list_positions(self.api.stock_account, unit=sj.constant.Unit.Share)        
+            positions = self.api.list_positions(
+                self.api.stock_account, unit=sj.constant.Unit.Share
+            )
             for pos in positions:
                 if pos.code == symbol:
-                    return pos.quantity       
-            return 0    # default to 0 if the stock is not found
+                    return pos.quantity
+            return 0  # default to 0 if the stock is not found
         except sj.error.TokenError as e:
             self.logging.error(f"Token error: {e.detail}")
             return 0
@@ -327,7 +328,7 @@ symbols = [g_upperid, g_lowerid]
 
 
 def main():
-    dynamic_sell_threshold = 60
+    expected_profit = 60
     # fees = 0.385 / 100
     fees = 0.4 / 100
     total_amount = 30000
@@ -375,16 +376,16 @@ def main():
                 print(f"snapshots:, {snapshots}, pos: {bot.pos}")
 
                 # 4. 算profit
-                net_profit = sum(
+                current_net_profit = sum(
                     calculate_profit(
                         bot.bought_price[symbol], snapshots[symbol], bot.pos[symbol]
                     )
                     for symbol in symbols
                 )
-                print(f"net profit: {net_profit} / taken profit: {bot.taken_profit}")
+                print(f"current net profit: {current_net_profit} / taken profit: {bot.taken_profit}")
 
                 # todo: if partial filled, net_profit should be recalucated!!!
-                if net_profit >= dynamic_sell_threshold - bot.taken_profit:
+                if current_net_profit >= expected_profit - bot.taken_profit:
                     # 3.掛單
                     for symbol in symbols:
                         if bot.pos[symbol] > 0:
@@ -394,7 +395,7 @@ def main():
                                 price=snapshots[symbol],
                             )
                     time.sleep(30)
-                    
+
                 current_time = time.time()
                 time_to_sleep = cooldown - (current_time % cooldown) + til_second
                 # sleep between 20 second to 80 second, should be wait till fully filled.
@@ -403,7 +404,7 @@ def main():
                 now = datetime.datetime.now()
                 # every 3 minutes
                 if now.minute % 3 == 0:
-                    pass    
+                    pass
                 print("-" * 80)  # Optional separator
             # reconfirm, maybe not necessary
             bot.pos = {
