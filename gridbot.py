@@ -152,7 +152,7 @@ class GridBot:
     # 7.2 抓取庫存部位大小y
     ###########################################
     def getPositions(self):
-        self.api.update_status(self.api.stock_account)
+        # self.api.update_status(self.api.stock_account)
         # print('list trade:', api.list_trades())
         portfolio = self.api.list_positions(
             self.api.stock_account, unit=shioaji.constant.Unit.Share

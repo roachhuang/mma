@@ -11,6 +11,7 @@ from shioaji.constant import (
     StockOrderCond,
     STOCK_ORDER_LOT_INTRADAY_ODD,
     STOCK_ORDER_LOT_COMMON,
+    
 )
 
 import logging
@@ -55,11 +56,35 @@ import misc
 #     return filled_orders
 
 
-def calculate_allocate(total_money, stock_prices, weights):
-    g_lowerid_shares = int(total_money * weights[g_lowerid] // stock_prices[g_lowerid])
+def get_tick_unit(stock_price: float) -> float:
+    """
+    Returns the fluctuation unit (TICK) for the given stock price.
+
+    Args:
+        stock_price (float): The current stock price.
+
+    Returns:
+        float: The TICK value for the stock price.
+    """
+    if stock_price < 10:
+        return 0.01
+    elif stock_price < 50:
+        return 0.05
+    elif stock_price < 100:
+        return 0.1
+    elif stock_price < 500:
+        return 0.5
+    elif stock_price < 1000:
+        return 1.0
+    else:
+        return 5.0
+
+
+def calculate_allocate(total_money, snapshots, weights):
+    g_lowerid_shares = int(total_money * weights[g_lowerid] // snapshots[g_lowerid])
     # Adjust shares of the fixed stock to be a multiple of 1000
     g_lowerid_shares = (g_lowerid_shares // 1000) * 1000
-    g_lowerid_cost = g_lowerid_shares * stock_prices[g_lowerid]
+    g_lowerid_cost = g_lowerid_shares * snapshots[g_lowerid]
 
     # Calculate the scale factor to maintain the same weights
     scale_factor = g_lowerid_cost / (total_money * weights[g_lowerid])
@@ -67,7 +92,7 @@ def calculate_allocate(total_money, stock_prices, weights):
 
     # Reallocate money based on scaled total money and original weights
     g_upperid_shares = int(
-        scaled_total_money * weights[g_upperid] // stock_prices[g_upperid]
+        scaled_total_money * weights[g_upperid] // snapshots[g_upperid]
     )
     return {
         g_upperid: g_upperid_shares,
@@ -75,13 +100,20 @@ def calculate_allocate(total_money, stock_prices, weights):
     }
 
 
-def calculate_profit(buy_price: float, sell_price: float, quantity: int) -> int:
+def calculate_profit(buy_price: float, sell_price: float, quantity: int) -> int:    
     # break even: 0.208% after discount
     discount = 0.38
     service_fee = float(0.001425 * discount)
     tax = 0.001
 
     """Calculates the net profit from a stock transaction.
+    股價               TICK股價升降單位
+    每股市價未滿10元	0.01元
+    10元至未滿50元	    0.05元
+    50元至未滿100元	    0.1元
+    100元至未滿500元	0.5元
+    500元至未滿1000元	1元
+    1000元以上	        5元
     Args:
         buy_price (float): The purchase price per share.
         sell_price (float): The selling price per share.
@@ -121,12 +153,15 @@ class GridBot:
         self.api.set_order_callback(self.order_cb)
 
     def get_position_qty(self, symbol)->int:
-        positions = self.api.list_positions(self.api.stock_account, unit="Share")
-        quantity = next(
-            (position.quantity for position in positions if position.code == symbol),
-            0,  # Default to 0 if the stock is not found
-        )
-        return quantity
+        try:
+            positions = self.api.list_positions(self.api.stock_account, unit=sj.constant.Unit.Share)        
+            for pos in positions:
+                if pos.code == symbol:
+                    return pos.quantity       
+            return 0    # default to 0 if the stock is not found
+        except sj.error.TokenError as e:
+            self.logging.error(f"Token error: {e.detail}")
+            return 0
 
     def buy(self, symbol, price, quantity):
         return self.place_flexible_order(
@@ -292,7 +327,7 @@ symbols = [g_upperid, g_lowerid]
 
 
 def main():
-    dynamic_sell_threshold = 40
+    dynamic_sell_threshold = 60
     # fees = 0.385 / 100
     fees = 0.4 / 100
     total_amount = 30000
@@ -300,9 +335,9 @@ def main():
     # weights = {g_upperid: 0.46772408, g_lowerid: 0.53227592}
     weights = {g_upperid: 0.425652829531973, g_lowerid: 0.5743471704680267}
     mutexDict = {symbols[0]: Lock(), symbols[1]: Lock()}
-    cooldown = 60
+    cooldown = 15
     # sleep to n seconds
-    til_second = 20
+    til_second = 10
 
     api = shioajiLogin(simulation=False)
 
@@ -319,10 +354,10 @@ def main():
     print(bot.pos)
     # todo: maybe just one stock has value, so need to save taken_profit in case not all stocks
     if any(bot.pos.values()):
-        # bought_prices.p should be located on folder mma_shioaji_GridBot 
+        # bought_prices.p should be located on folder mma_shioaji_GridBot
         bot.bought_price = misc.pickle_read("bought_prices")
         print("bought price:", bot.bought_price)
-        bot.taken_profit = 0
+        bot.taken_profit = 174
         try:
             while any(bot.pos.values()):
                 # time.sleep(10)
@@ -346,7 +381,7 @@ def main():
                     )
                     for symbol in symbols
                 )
-                print(f"net profit / taken profit:, {net_profit}, {bot.taken_profit}")
+                print(f"net profit: {net_profit} / taken profit: {bot.taken_profit}")
 
                 # todo: if partial filled, net_profit should be recalucated!!!
                 if net_profit >= dynamic_sell_threshold - bot.taken_profit:
@@ -358,16 +393,17 @@ def main():
                                 quantity=bot.pos[symbol],
                                 price=snapshots[symbol],
                             )
-
-                    current_time = time.time()
-                    time_to_sleep = cooldown - (current_time % cooldown) + til_second
-                    # sleep between 20 second to 80 second, should be wait till fully filled.
-                    time.sleep(time_to_sleep)
+                    time.sleep(30)
+                    
+                current_time = time.time()
+                time_to_sleep = cooldown - (current_time % cooldown) + til_second
+                # sleep between 20 second to 80 second, should be wait till fully filled.
+                time.sleep(time_to_sleep)
 
                 now = datetime.datetime.now()
                 # every 3 minutes
                 if now.minute % 3 == 0:
-                    pass
+                    pass    
                 print("-" * 80)  # Optional separator
             # reconfirm, maybe not necessary
             bot.pos = {
@@ -395,8 +431,9 @@ def main():
         shares_to_buy = calculate_allocate(total_amount, snapshots, weights)
 
         print(f"shares_to_buy:{shares_to_buy}, @price {snapshots}")
-        
+
         # always break at here to find a good pair of prices before submitting!!!
+        # watch for mkt data, 2330 stock price the lower the better when 00664r price fixs!!!
         for symbol in symbols:
             bot.trades[symbol] = bot.buy(
                 symbol=symbol,

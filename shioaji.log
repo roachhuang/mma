@@ -2,3 +2,5 @@
 [E 2024-06-19 10:10:38,445 /home/roach/.local/lib/python3.10/site-packages/shioaji/shioaji.py:231:_setup_solace] RequestException URLError(gaierror(-3, 'Temporary failure in name resolution'))
 [E 2024-06-19 10:10:43,953 /home/roach/.local/lib/python3.10/site-packages/shioaji/shioaji.py:231:_setup_solace] RequestException URLError(OSError(101, 'Network is unreachable'))
 [E 2024-12-18 12:03:45,113 c:\Users\roach\AppData\Local\Programs\Python\Python311\Lib\site-packages\shioaji\utils.py:49:raise_resp_error] {'status': {'status_code': 401}, 'response': {'detail': 'Token is expired'}}
+[E 2024-12-19 09:01:28,754 C:\Users\roach\AppData\Local\Programs\Python\Python311\Lib\site-packages\shioaji\utils.py:49:raise_resp_error] {'status': {'status_code': 401}, 'response': {'detail': 'Token is expired'}}
+[E 2024-12-19 09:34:38,783 c:\Users\roach\AppData\Local\Programs\Python\Python311\Lib\site-packages\shioaji\utils.py:49:raise_resp_error] {'status': {'status_code': 401}, 'response': {'detail': 'Token is expired'}}
