@@ -38,21 +38,11 @@ helpers_dir = Path(__file__).resolve().parent.parent / "helpers"
 # Add to sys.path
 sys.path.insert(0, str(helpers_dir))
 ######################################################
-
-from ShioajiLogin import shioajiLogin, get_snapshots
-import misc
-
-# def process_final_order_status(bot, orders):
-#     """Process the final statuses of all orders."""
-#     filled_orders = []
-#     for symbol, order_id in orders.items():
-#         status = bot.get_order_status(order_id)
-#         if status == "Filled":
-#             print(f"Order for {symbol} has been filled!")
-#             filled_orders.append(symbol)
-#         elif status == "Failed":
-#             print(f"Order for {symbol} failed to fill!")
-#     return filled_orders
+try:
+    import ShioajiLogin as mysj  # import shioajiLogin, get_snapshots
+    import misc
+except ImportError as e:
+    print(f"ImportError: {e}")
 
 
 def get_tick_unit(stock_price: float) -> float:
@@ -100,7 +90,7 @@ def calculate_allocate(total_money, snapshots, weights):
 
 
 def calculate_profit(buy_price: float, sell_price: float, quantity: int) -> int:
-    # break even: 0.208% after discount
+    # Transaction Costs is the key. break even: 0.208% after discount
     discount = 0.38
     service_fee = float(0.001425 * discount)
     tax = 0.001
@@ -317,7 +307,8 @@ class GridBot:
 
 #######################################################################################################################
 #######################################################################################################################
-# main fn
+# main fn. Zero-Beta Portfolio: This portfolio is constructed to have zero systematic risk, meaning its returns are not influenced by market movements.
+# It's essentially a portfolio that is uncorrelated with the market portfolio
 ########################################################################################################################
 ########################################################################################################################
 
@@ -332,15 +323,17 @@ def main():
     # fees = 0.385 / 100
     fees = 0.4 / 100
     total_amount = 30000
-
-    # weights = {g_upperid: 0.46772408, g_lowerid: 0.53227592}
-    weights = {g_upperid: 0.425652829531973, g_lowerid: 0.5743471704680267}
+    weights=misc.pickle_read('weights')
+    # weights = {g_upperid: 0.425652829531973, g_lowerid: 0.5743471704680267}
     mutexDict = {symbols[0]: Lock(), symbols[1]: Lock()}
     cooldown = 15
     # sleep to n seconds
     til_second = 10
 
-    api = shioajiLogin(simulation=False)
+    snapshots = {}
+    prev_snapshots = {}
+
+    api = mysj.shioajiLogin(simulation=False)
 
     # 創建交易機器人物件
     logging.basicConfig(
@@ -348,6 +341,9 @@ def main():
         level=logging.INFO,
         format="%(asctime)s %(levelname)s: %(message)s",  # auto insert current time, and logging level, just as INFO, DEBUG...
     )
+
+    # lowerid_1mk = mysj.Candle_Data(api=api, symbol=g_lowerid, period=1)
+    # upperid_1mk = mysj.Candle_Data(api=api, symbol=g_upperid, period=1)
 
     bot = GridBot(api, logging)
 
@@ -358,7 +354,7 @@ def main():
         # bought_prices.p should be located on folder mma_shioaji_GridBot
         bot.bought_price = misc.pickle_read("bought_prices")
         print("bought price:", bot.bought_price)
-        bot.taken_profit = 174
+        bot.taken_profit = 0
         try:
             while any(bot.pos.values()):
                 # time.sleep(10)
@@ -372,7 +368,7 @@ def main():
                     break
 
                 # 3. fetch latest market snapshots
-                snapshots = get_snapshots(api, symbols)
+                snapshots = mysj.get_snapshots(api, symbols)
                 print(f"snapshots:, {snapshots}, pos: {bot.pos}")
 
                 # 4. 算profit
@@ -382,7 +378,9 @@ def main():
                     )
                     for symbol in symbols
                 )
-                print(f"current net profit: {current_net_profit} / taken profit: {bot.taken_profit}")
+                print(
+                    f"current net profit: {current_net_profit} / taken profit: {bot.taken_profit}"
+                )
 
                 # todo: if partial filled, net_profit should be recalucated!!!
                 if current_net_profit >= expected_profit - bot.taken_profit:
@@ -428,19 +426,32 @@ def main():
     #################################################################################
     # empty hand, ask if want to buy
     elif misc.get_user_confirmation(question="buy"):
-        snapshots = get_snapshots(api, symbols)
+        snapshots = mysj.get_snapshots(api, symbols)
+        prev_snapshots = snapshots.copy()
         shares_to_buy = calculate_allocate(total_amount, snapshots, weights)
-
-        print(f"shares_to_buy:{shares_to_buy}, @price {snapshots}")
 
         # always break at here to find a good pair of prices before submitting!!!
         # watch for mkt data, 2330 stock price the lower the better when 00664r price fixs!!!
-        for symbol in symbols:
-            bot.trades[symbol] = bot.buy(
-                symbol=symbol,
-                quantity=shares_to_buy[symbol],
-                price=snapshots[symbol],
-            )
+        pct_change = {}
+        bot.trades = {}
+        while all(value==0 for value in bot.trades.values()):
+            snapshots = mysj.get_snapshots(api, symbols)
+            for symbol in symbols:
+                pct_change[symbol] = (
+                    (snapshots[symbol] - prev_snapshots[symbol])
+                    / prev_snapshots[symbol]
+                    * 100
+                )
+            prev_snapshots = snapshots.copy()
+            print(f'spread: {pct_change[g_upperid]-pct_change[g_lowerid]}')
+            if pct_change[g_upperid] < 0 and pct_change[g_lowerid] <= 0:
+                print(f"shares_to_buy:{shares_to_buy}, @price {snapshots}")
+                for symbol in symbols:
+                    bot.trades[symbol] = bot.buy(
+                        symbol=symbol,
+                        quantity=shares_to_buy[symbol],
+                        price=snapshots[symbol],
+                    )
 
         try:
             while not all(
