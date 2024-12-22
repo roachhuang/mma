@@ -52,10 +52,13 @@ helpers_dir = os.path.join(home_dir, "projects/helpers")
 if helpers_dir not in sys.path:
     sys.path.append(helpers_dir)
 
-import mykbar as kb
-import mongodb as mgdb
-import misc as misc
-import plt as my_plt
+try:
+    import mykbar as kb
+    import mongodb as mgdb
+    import misc as misc
+    import plt as my_plt
+except ImportError as e:
+    print(f"ImportError: {e}")
 
 
 def main():
@@ -307,13 +310,17 @@ def main():
     # r_square[stock] = model.score(x_pct, y_pct)
     # print(f'stock: {stock}, alpha: {alpha[stock]}, beta: {beta[stock]}')
 
-    w1_symbol = "2330_tw"
+    w1_symbol = "2330"
     # w1_symbol = "0052_tw"
-    w2_symbol = "00664R_tw"
-    w1, w2 = calculate_weights(betas[w1_symbol], betas[w2_symbol])
+    w2_symbol = "00664R"
+    weights={}
+    w1, w2 = calculate_weights(betas[w1_symbol+'_tw'], betas[w2_symbol+'_tw'])
     print(f"Weight for {w1_symbol}:, {w1}")
     print(f"Weight for {w2_symbol}:, {w2}")
-
+    weights[w1_symbol] = w1
+    weights[w2_symbol] = w2
+    misc.pickle_dump("weights", weights)
+    
     # regression_line = beta * df_daily_ret["^twii"] + alpha[i]
     # axes[i].plot(df_daily_ret["^twii"], regression_line, "-", color="r")
 
