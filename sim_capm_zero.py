@@ -50,10 +50,10 @@ def get_tick_unit(stock_price: float) -> float:
     Returns the fluctuation unit (TICK) for the given stock price.
 
     Args:
-        stock_price (float): The current stock price.
+            stock_price (float): The current stock price.
 
     Returns:
-        float: The TICK value for the stock price.
+            float: The TICK value for the stock price.
     """
     if stock_price < 10:
         return 0.01
@@ -80,9 +80,7 @@ def calculate_allocate(total_money, snapshots, weights):
     scaled_total_money = total_money * scale_factor
 
     # Reallocate money based on scaled total money and original weights
-    g_upperid_shares = int(
-        scaled_total_money * weights[g_upperid] // snapshots[g_upperid]
-    )
+    g_upperid_shares = int(scaled_total_money * weights[g_upperid] // snapshots[g_upperid])
     return {
         g_upperid: g_upperid_shares,
         g_lowerid: g_lowerid_shares,
@@ -96,20 +94,20 @@ def calculate_profit(buy_price: float, sell_price: float, quantity: int) -> int:
     tax = 0.001
 
     """Calculates the net profit from a stock transaction.
-    股價               TICK股價升降單位
-    每股市價未滿10元	0.01元
-    10元至未滿50元	    0.05元
-    50元至未滿100元	    0.1元
-    100元至未滿500元	0.5元
-    500元至未滿1000元	1元
-    1000元以上	        5元
-    Args:
-        buy_price (float): The purchase price per share.
-        sell_price (float): The selling price per share.
-        quantity (int): The number of shares.
-    Returns:
-        float: The net profit from the transaction.
-    """
+	股價               TICK股價升降單位
+	每股市價未滿10元	0.01元
+	10元至未滿50元	    0.05元
+	50元至未滿100元	    0.1元
+	100元至未滿500元	0.5元
+	500元至未滿1000元	1元
+	1000元以上	        5元
+	Args:
+		buy_price (float): The purchase price per share.
+		sell_price (float): The selling price per share.
+		quantity (int): The number of shares.
+	Returns:
+		float: The net profit from the transaction.
+	"""
     total_cost = round(quantity * buy_price * (1 + discount * service_fee))
     total_proceeds = round(quantity * sell_price)
     total_fees = round(total_proceeds * (service_fee + tax))
@@ -143,9 +141,7 @@ class GridBot:
 
     def get_position_qty(self, symbol) -> int:
         try:
-            positions = self.api.list_positions(
-                self.api.stock_account, unit=sj.constant.Unit.Share
-            )
+            positions = self.api.list_positions(self.api.stock_account, unit=sj.constant.Unit.Share)
             for pos in positions:
                 if pos.code == symbol:
                     return pos.quantity
@@ -155,14 +151,10 @@ class GridBot:
             return 0
 
     def buy(self, symbol, price, quantity):
-        return self.place_flexible_order(
-            symbol=symbol, action=ACTION_BUY, price=price, qty=quantity
-        )
+        return self.place_flexible_order(symbol=symbol, action=ACTION_BUY, price=price, qty=quantity)
 
     def sell(self, symbol, price, quantity):
-        return self.place_flexible_order(
-            symbol=symbol, action=ACTION_SELL, price=price, qty=quantity
-        )
+        return self.place_flexible_order(symbol=symbol, action=ACTION_SELL, price=price, qty=quantity)
 
     def place_flexible_order(self, symbol, price, qty, action):
         # Determine the number of regular lots and odd lot quantity
@@ -183,9 +175,7 @@ class GridBot:
                 account=self.api.stock_account,
             )
             trade = self.api.place_order(contract, order)
-            print(
-                f"Placed regular lot {action} order for {symbol}: {common_lot_qty} lot(s) @{price}"
-            )
+            print(f"Placed regular lot {action} order for {symbol}: {common_lot_qty} lot(s) @{price}")
             # print("status:", trade.status.status)
         # if qty like 1300 shares, and you want to place it all, change elif to if!!!
         elif odd_lot_qty > 0:
@@ -200,9 +190,7 @@ class GridBot:
                 account=self.api.stock_account,
             )
             trade = self.api.place_order(contract, order)
-            print(
-                f"Placed odd lot {action} order for {symbol}: {odd_lot_qty} shares @{price}"
-            )
+            print(f"Placed odd lot {action} order for {symbol}: {odd_lot_qty} shares @{price}")
         # log the most crucial info for record
         self.logging.info(f"trade: {trade}")
         print("trade:", trade)
@@ -254,7 +242,7 @@ class GridBot:
             code = msg["code"]
             action = msg["action"]
             price = msg["price"]
-            quantity = msg["quantity"]
+            quantity = msg["quantity"] * 1000 if msg["order_lot"] == "Common" else msg["quantity"]
             if code in symbols:
                 if action == ACTION_BUY:
                     self.bought_price[code] = price
@@ -285,16 +273,12 @@ class GridBot:
                 self.api.update_status(account=self.api.stock_account)
                 tradelist = self.api.list_trades()  # Fetch updated trades list
                 # Filter trades only for the given symbols
-                relevant_trades = [
-                    trade for trade in tradelist if trade.contract.code in symbols
-                ]
+                relevant_trades = [trade for trade in tradelist if trade.contract.code in symbols]
                 for trade in relevant_trades:
                     print(f"{trade.contract.code}/{trade.status.status}")
 
                 # Check if all relevant trades are completed
-                if all(
-                    trade.status.status in completed_status for trade in relevant_trades
-                ):
+                if all(trade.status.status in completed_status for trade in relevant_trades):
                     break  # Exit loop if all relevant trades are completed
             except Exception as e:
                 self.logging.error(f"Error checking specific trade statuses: {e}")
@@ -315,15 +299,15 @@ class GridBot:
 g_upperid = "2330"
 # g_upperid = "0052"
 g_lowerid = "00664R"
-symbols = [g_upperid, g_lowerid]
+symbols = [g_upperid.upper(), g_lowerid.upper()]
 
 
 def main():
-    expected_profit = 60
+    expected_profit = 100
     # fees = 0.385 / 100
     fees = 0.4 / 100
     total_amount = 30000
-    weights=misc.pickle_read('weights')
+    weights = misc.pickle_read("weights")
     # weights = {g_upperid: 0.425652829531973, g_lowerid: 0.5743471704680267}
     mutexDict = {symbols[0]: Lock(), symbols[1]: Lock()}
     cooldown = 15
@@ -373,14 +357,9 @@ def main():
 
                 # 4. 算profit
                 current_net_profit = sum(
-                    calculate_profit(
-                        bot.bought_price[symbol], snapshots[symbol], bot.pos[symbol]
-                    )
-                    for symbol in symbols
+                    calculate_profit(bot.bought_price[symbol], snapshots[symbol], bot.pos[symbol]) for symbol in symbols
                 )
-                print(
-                    f"current net profit: {current_net_profit} / taken profit: {bot.taken_profit}"
-                )
+                print(f"current net profit: {current_net_profit} / taken profit: {bot.taken_profit}")
 
                 # todo: if partial filled, net_profit should be recalucated!!!
                 if current_net_profit >= expected_profit - bot.taken_profit:
@@ -405,9 +384,7 @@ def main():
                     pass
                 print("-" * 80)  # Optional separator
             # reconfirm, maybe not necessary
-            bot.pos = {
-                symbol: bot.get_position_qty(symbol) for symbol in symbols
-            }  # key: value
+            bot.pos = {symbol: bot.get_position_qty(symbol) for symbol in symbols}  # key: value
             print(f"all sold. pos should be 0: {bot.pos}")
         except KeyboardInterrupt:
             print("\n my Ctrl-C detected. Exiting gracefully...")
@@ -417,9 +394,7 @@ def main():
             except Exception as e:
                 print("An error occurred:", e)
             finally:
-                print(
-                    "This code is always executed, regardless of whether an exception occurred or not"
-                )
+                print("This code is always executed, regardless of whether an exception occurred or not")
             print("end")
             exit
 
@@ -434,16 +409,17 @@ def main():
         # watch for mkt data, 2330 stock price the lower the better when 00664r price fixs!!!
         pct_change = {}
         bot.trades = {}
-        while all(value==0 for value in bot.trades.values()):
-            snapshots = mysj.get_snapshots(api, symbols)
+        while all(value == 0 for value in bot.trades.values()):
+            time.sleep(30  
+                       
+                       
+                       )
+            snapshots = mysj.get_snapshots(api, symbols)           
             for symbol in symbols:
-                pct_change[symbol] = (
-                    (snapshots[symbol] - prev_snapshots[symbol])
-                    / prev_snapshots[symbol]
-                    * 100
-                )
+                pct_change[symbol] = (snapshots[symbol] - prev_snapshots[symbol]) / prev_snapshots[symbol] * 100
+                
             prev_snapshots = snapshots.copy()
-            print(f'spread: {pct_change[g_upperid]-pct_change[g_lowerid]}')
+            print(f"spread: {pct_change[g_upperid]-pct_change[g_lowerid]}")
             if pct_change[g_upperid] < 0 and pct_change[g_lowerid] <= 0:
                 print(f"shares_to_buy:{shares_to_buy}, @price {snapshots}")
                 for symbol in symbols:
@@ -452,23 +428,21 @@ def main():
                         quantity=shares_to_buy[symbol],
                         price=snapshots[symbol],
                     )
+			
+                try:
+                    while not all(trade.status.status == "Filled" for trade in bot.trades.values()):
+                        for trade in bot.trades.values():
+                            # trade status will be updated automatically
+                            api.update_status(api.stock_account, trade=trade)
+                            print(f"{trade.contract.code}/{trade.status.status}")
 
-        try:
-            while not all(
-                trade.status.status == "Filled" for trade in bot.trades.values()
-            ):
-                for trade in bot.trades.values():
-                    # trade status will be updated automatically
-                    api.update_status(api.stock_account, trade=trade)
-                    print(f"{trade.contract.code}/{trade.status.status}")
+                    misc.pickle_dump("bought_prices", snapshots)
+                    api.logout
 
-            misc.pickle_dump("bought_prices", snapshots)
-            api.logout
-
-        except KeyboardInterrupt:
-            print("\n my Ctrl-C detected. Exiting gracefully...")
-            api.logout()
-            exit()
+                except KeyboardInterrupt:
+                    print("\n my Ctrl-C detected. Exiting gracefully...")
+                    api.logout()
+                    exit()
 
     else:
         print("END: empty-handed and do nothing.")
