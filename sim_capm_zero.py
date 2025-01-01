@@ -69,7 +69,7 @@ def get_tick_unit(stock_price: float) -> float:
         return 5.0
 
 
-def calculate_allocate(total_money, snapshots, weights):
+def calculate_allocate(total_money: int, snapshots: dict, weights: dict) -> dict:
     g_lowerid_shares = int(total_money * weights[g_lowerid] // snapshots[g_lowerid])
     # Adjust shares of the fixed stock to be a multiple of 1000
     g_lowerid_shares = (g_lowerid_shares // 1000) * 1000
@@ -127,12 +127,14 @@ class GridBot:
         # self.stockPrice = {}
         self.msglist = []
         self.statlist = []
-        self.bought_price = {}
+        self.bought_prices = {}
         self.sell_price = {}
-        self.pos = []
+        self.shares_to_buy={}
+        self.pos = {}
+        self.snapshots={}
         self.trades = {}
         self.taken_profit = 0
-        self.deal_cnt = 0
+        # self.deal_cnt = 0
         self.mutexmsg = Lock()
         self.mutexstat = Lock()
         self.api = api
@@ -303,7 +305,7 @@ symbols = [g_upperid.upper(), g_lowerid.upper()]
 
 
 def main():
-    expected_profit = 100
+    expected_profit = 106
     # fees = 0.385 / 100
     fees = 0.4 / 100
     total_amount = 30000
@@ -314,8 +316,8 @@ def main():
     # sleep to n seconds
     til_second = 10
 
-    snapshots = {}
-    prev_snapshots = {}
+    # snapshots = {}
+    # prev_snapshots = {}
 
     api = mysj.shioajiLogin(simulation=False)
 
@@ -334,10 +336,13 @@ def main():
     bot.pos = {symbol: bot.get_position_qty(symbol) for symbol in symbols}
     print(bot.pos)
     # todo: maybe just one stock has value, so need to save taken_profit in case not all stocks
-    if any(bot.pos.values()):
-        # bought_prices.p should be located on folder mma_shioaji_GridBot
-        bot.bought_price = misc.pickle_read("bought_prices")
-        print("bought price:", bot.bought_price)
+    if any(bot.pos.values()):      
+        # bot.bought_prices = {"2330": 1075, "00664R": 3.72}
+        # misc.pickle_dump('bought_prices', bot.bought_prices)
+        bot.bought_prices = misc.pickle_read("bought_prices")
+        print("bought price:", bot.bought_prices)
+        bot.shares_to_buy = calculate_allocate(total_amount, bot.bought_prices, weights)
+
         bot.taken_profit = 0
         try:
             while any(bot.pos.values()):
@@ -352,26 +357,42 @@ def main():
                     break
 
                 # 3. fetch latest market snapshots
-                snapshots = mysj.get_snapshots(api, symbols)
-                print(f"snapshots:, {snapshots}, pos: {bot.pos}")
+                bot.snapshots = mysj.get_snapshots(api, symbols)
+                print(f"snapshots:, {bot.snapshots}, pos: {bot.pos}")
 
-                # 4. 算profit
+                # 4. compute profit
                 current_net_profit = sum(
-                    calculate_profit(bot.bought_price[symbol], snapshots[symbol], bot.pos[symbol]) for symbol in symbols
+                    calculate_profit(bot.bought_prices[symbol], bot.snapshots[symbol], bot.pos[symbol])
+                    for symbol in symbols
                 )
                 print(f"current net profit: {current_net_profit} / taken profit: {bot.taken_profit}")
 
                 # todo: if partial filled, net_profit should be recalucated!!!
                 if current_net_profit >= expected_profit - bot.taken_profit:
-                    # 3.掛單
+                    # 5. place sell orders
                     for symbol in symbols:
                         if bot.pos[symbol] > 0:
                             bot.trades[symbol] = bot.sell(
                                 symbol=symbol,
                                 quantity=bot.pos[symbol],
-                                price=snapshots[symbol],
+                                price=bot.snapshots[symbol],
                             )
                     time.sleep(30)
+                # net profit less than expectattion and no sell transaction has been done.
+                elif bot.taken_profit == 0:
+                    prev_unfilled_shares = {symbol: bot.shares_to_buy[symbol] - bot.pos[symbol] for symbol in symbols}
+                    # key_of_zero = next((k for k, v in bot.pos.items() if v == 0), None)
+                    # if key_of_zero is not None and bot.taken_profit == 0:
+                    if any(prev_unfilled_shares.values()):
+                        for symbol in symbols:
+                            if prev_unfilled_shares[symbol] > 0 and bot.snapshots[symbol] < bot.bought_prices[symbol]:
+                                bot.trades[symbol] = bot.buy(
+                                    symbol=symbol,
+                                    quantity=prev_unfilled_shares[symbol],
+                                    price=bot.snapshots[symbol],
+                                )
+                                print(f"buy0 {symbol} {prev_unfilled_shares[symbol]}@{bot.snapshots[symbol]}")
+                        time.sleep(30)
 
                 current_time = time.time()
                 time_to_sleep = cooldown - (current_time % cooldown) + til_second
@@ -383,6 +404,7 @@ def main():
                 if now.minute % 3 == 0:
                     pass
                 print("-" * 80)  # Optional separator
+
             # reconfirm, maybe not necessary
             bot.pos = {symbol: bot.get_position_qty(symbol) for symbol in symbols}  # key: value
             print(f"all sold. pos should be 0: {bot.pos}")
@@ -401,49 +423,55 @@ def main():
     #################################################################################
     # empty hand, ask if want to buy
     elif misc.get_user_confirmation(question="buy"):
-        snapshots = mysj.get_snapshots(api, symbols)
-        prev_snapshots = snapshots.copy()
-        shares_to_buy = calculate_allocate(total_amount, snapshots, weights)
+        
+        
+        bot.snapshots = mysj.get_snapshots(api, symbols)
+        prev_snapshots = bot.snapshots.copy()
+        bot.shares_to_buy = calculate_allocate(total_amount, bot.snapshots, weights)
 
         # always break at here to find a good pair of prices before submitting!!!
         # watch for mkt data, 2330 stock price the lower the better when 00664r price fixs!!!
         pct_change = {}
         bot.trades = {}
-        while all(value == 0 for value in bot.trades.values()):
-            time.sleep(30  
-                       
-                       
-                       )
-            snapshots = mysj.get_snapshots(api, symbols)           
+        bot.pos = {symbol: bot.get_position_qty(symbol) for symbol in symbols}
+        #
+        while not all(bot.shares_to_buy[symbol] == bot.pos[symbol] for symbol in symbols): #True: # all(value == 0 for value in bot.trades.values()):
+            time.sleep(25)
+            # 1. cancel open orders
+            bot.cancelOrders()
+            # 2. get positions
+            bot.snapshots = mysj.get_snapshots(api, symbols)
+
             for symbol in symbols:
-                pct_change[symbol] = (snapshots[symbol] - prev_snapshots[symbol]) / prev_snapshots[symbol] * 100
-                
-            prev_snapshots = snapshots.copy()
+                pct_change[symbol] = (bot.snapshots[symbol] - prev_snapshots[symbol]) / prev_snapshots[symbol] * 100
+            prev_snapshots = bot.snapshots.copy()
             print(f"spread: {pct_change[g_upperid]-pct_change[g_lowerid]}")
             if pct_change[g_upperid] < 0 and pct_change[g_lowerid] <= 0:
-                print(f"shares_to_buy:{shares_to_buy}, @price {snapshots}")
+                print(f"shares_to_buy:{bot.shares_to_buy}, @price {bot.snapshots}")
                 for symbol in symbols:
                     bot.trades[symbol] = bot.buy(
                         symbol=symbol,
-                        quantity=shares_to_buy[symbol],
-                        price=snapshots[symbol],
+                        quantity=bot.shares_to_buy[symbol],
+                        price=bot.snapshots[symbol],
                     )
-			
+
                 try:
+                    # wait till all buy orders are filled.
                     while not all(trade.status.status == "Filled" for trade in bot.trades.values()):
                         for trade in bot.trades.values():
                             # trade status will be updated automatically
                             api.update_status(api.stock_account, trade=trade)
                             print(f"{trade.contract.code}/{trade.status.status}")
-
-                    misc.pickle_dump("bought_prices", snapshots)
+                        time.sleep(15)
+                    misc.pickle_dump("bought_prices", bot.snapshots)
                     api.logout
-
+                    break
                 except KeyboardInterrupt:
                     print("\n my Ctrl-C detected. Exiting gracefully...")
+                    misc.pickle_dump("bought_prices", bot.snapshots)
                     api.logout()
                     exit()
-
+            bot.pos = {symbol: bot.get_position_qty(symbol) for symbol in symbols}
     else:
         print("END: empty-handed and do nothing.")
         api.logout()
