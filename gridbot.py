@@ -1,5 +1,5 @@
 import pandas as pd
-import shioaji
+import shioaji as sj
 import shioaji.order as stOrder
 import shioaji.shioaji
 import yfinance as yf
@@ -32,29 +32,29 @@ class GridBot:
         "LowerLimitPosition": 0.899999,
         "BiasPeriod": 73,
     }
-    year: int
-    month: int
-    day: int
-    stockPrice: object
-    stockBid: object
-    stockAsk: object
-    upperprice: int
-    uppershare: int
-    lowerprice: int
-    lowershare: int
-    uppershareTarget: int
-    lowershareTarget: int
-    trigger: int  # 最低交易金額門檻,避免交易金額太小,錢被手續費低消吃光光
-    money: int
-    initmoney: int
-    contractUpper: any
-    contractLower: any
-    api: shioaji.Shioaji
-    mutexgSettle: any
-    mutexmsg: any
-    mutexstat: any
-    statlist: List
-    msglist: List
+    # year: int
+    # month: int
+    # day: int
+    # stockPrice: object
+    # stockBid: object
+    # stockAsk: object
+    # upperprice: int
+    # uppershare: int
+    # lowerprice: int
+    # lowershare: int
+    # uppershareTarget: int
+    # lowershareTarget: int
+    # trigger: int  # 最低交易金額門檻,避免交易金額太小,錢被手續費低消吃光光
+    # money: int
+    # initmoney: int
+    # contractUpper: any
+    # contractLower: any
+    # api: shioaji.Shioaji
+    # mutexgSettle: any
+    # mutexmsg: any
+    # mutexstat: any
+    # statlist: List
+    # msglist: List
 
     def __init__(self, api: shioaji.Shioaji, logging):
         # keep track of MA calulated date
@@ -66,9 +66,7 @@ class GridBot:
         self.initmoney = self.g_settlement = 0
         self.upperid = g_upperid
         self.lowerid = g_lowerid
-        self.money = self.upperprice = self.uppershare = self.lowerprice = (
-            self.lowershare
-        ) = 0
+        self.money = self.upperprice = self.uppershare = self.lowerprice = self.lowershare = 0
         self.contractUpper = api.Contracts.Stocks[self.upperid]
         self.contractLower = api.Contracts.Stocks[self.lowerid]
         self.api = api
@@ -104,7 +102,7 @@ class GridBot:
         self.mutexmsg.acquire()
         try:
             self.msglist.append(msg)
-            self.logging.info(f'in order_cb, {msg}')
+            self.logging.info(f"in order_cb, {msg}")
         except Exception as e:  # work on python 3.x
             self.logging.error("place_cb  Error Message A: " + str(e))
         self.mutexmsg.release()
@@ -112,7 +110,7 @@ class GridBot:
         self.mutexstat.acquire()
         try:
             self.statlist.append(stat)
-            self.logging.info(f' in ord_cb stlist: {self.statlist}')
+            self.logging.info(f" in ord_cb stlist: {self.statlist}")
         except Exception as e:  # work on python 3.x
             self.logging.error("place_cb  Error Message B: " + str(e))
         self.mutexstat.release()
@@ -150,33 +148,35 @@ class GridBot:
 
     #########################################
     # 7.2 抓取庫存部位大小y
-    ###########################################
-    def getPositions(self):
-        # self.api.update_status(self.api.stock_account)
-        # print('list trade:', api.list_trades())
-        portfolio = self.api.list_positions(
-            self.api.stock_account, unit=shioaji.constant.Unit.Share
-        )
-        # df_positions = pd.DataFrame(portfolio)
-        df_positions = pd.DataFrame(s.__dict__ for s in portfolio)
-        ser_quantity = df_positions.loc[df_positions["code"] == self.upperid][
-            "quantity"
-        ]
-        if ser_quantity.size == 0:
-            self.uppershare = 0
-        else:
-            print("ser_qty_size:", ser_quantity.size)
-            self.uppershare = int(ser_quantity.iloc[0])
-        if self.lowerid != "Cash":
-            ser_quantity = df_positions.loc[df_positions["code"] == self.lowerid][
-                "quantity"
-            ]
-            if ser_quantity.size == 0:
-                self.lowershare = 0
-            else:
-                self.lowershare = int(ser_quantity.iloc[0])
+    #########################################
+    def getPositions(self):             
+        positions = self.api.list_positions(self.api.stock_account, unit=sj.constant.Unit.Share)       
+        self.lowershare = next((pos.quantity for pos in positions if pos.code == self.lowerid), 0)
+        self.uppershare = next((pos.quantity for pos in positions if pos.code == self.upperid), 0)
         msg = f"positions: 00662-{self.lowershare}, 0052-{self.uppershare}"
         print(msg)
+
+    # def getPositions(self):
+    #     # self.api.update_status(self.api.stock_account)
+    #     # print('list trade:', api.list_trades())
+    #     portfolio = self.api.list_positions(self.api.stock_account, unit=sj.constant.Unit.Share)
+    #     # df_positions = pd.DataFrame(portfolio)
+    #     df_positions = pd.DataFrame(s.__dict__ for s in portfolio)
+    #     ser_quantity = df_positions.loc[df_positions["code"] == self.upperid]["quantity"]
+    #     if ser_quantity.size == 0:
+    #         self.uppershare = 0
+    #     else:
+    #         print("ser_qty_size:", ser_quantity.size)
+    #         self.uppershare = int(ser_quantity.iloc[0])
+
+    #     if self.lowerid != "Cash":
+    #         ser_quantity = df_positions.loc[df_positions["code"] == self.lowerid]["quantity"]
+    #         if ser_quantity.size == 0:
+    #             self.lowershare = 0
+    #         else:
+    #             self.lowershare = int(ser_quantity.iloc[0])
+    #     msg = f"positions: 00662-{self.lowershare}, 0052-{self.uppershare}"
+    #     print(msg)
 
     def calculateSharetarget(self, upperprice, lowerprice):
         # 計算目標部位百分比
@@ -209,6 +209,27 @@ class GridBot:
         self.logging.info("lowerprice:" + str(lowerprice))
 
     def calculateGrid(self, upperprice, lowerprice):
+        """
+        乖離率是一個用來衡量股價與其移動平均線之間差距的指標。簡單來說，就是用來觀察股價是偏離了長期趨勢多還是少。
+
+        乖離率的計算方式
+
+        乖離率 = (當前股價 - 移動平均線) / 移動平均線 * 100%
+
+        當前股價： 股票在當天的收盤價。
+        移動平均線： 通常使用5日、10日、20日或更長的移動平均線。
+        乖離率的意義
+
+        判斷超買超賣：
+        乖離率過高：表示股價遠高於移動平均線，可能處於超買狀態，未來可能回檔。
+        乖離率過低：表示股價遠低於移動平均線，可能處於超賣狀態，未來可能反彈。
+        確認趨勢：
+        若乖離率持續維持正值且不斷擴大，表示股價處於強勁的上漲趨勢。
+        若乖離率持續維持負值且不斷擴大，表示股價處於下跌趨勢。
+        尋找進場時機：
+        當乖離率由正轉負，且股價跌破移動平均線時，可能是一個賣出訊號。
+        當乖離率由負轉正，且股價突破移動平均線時，可能是一個買入訊號。
+        """
         MA = self.MA
         # 計算目標部位百分比
         BiasUpperLimit = self.parameters["BiasUpperLimit"]
@@ -219,9 +240,7 @@ class GridBot:
         # compute 乖離 rate
         Bias = (upperprice / lowerprice) / MA
         shareTarget = (Bias - BiasLowerLimit) / (BiasUpperLimit - BiasLowerLimit)
-        shareTarget = (
-            shareTarget * (UpperLimitPosition - LowerLimitPosition) + LowerLimitPosition
-        )
+        shareTarget = shareTarget * (UpperLimitPosition - LowerLimitPosition) + LowerLimitPosition
         shareTarget = max(shareTarget, UpperLimitPosition)
         shareTarget = min(shareTarget, LowerLimitPosition)
         print("0052 shareTaget:", shareTarget)
@@ -258,8 +277,7 @@ class GridBot:
             ############################################
             self.sendOrders()
         except Exception as e:  # work on python 3.x
-            self.logging.info(" updateOrder Error Message: " + str(e)
-            )
+            self.logging.info(" updateOrder Error Message: " + str(e))
 
     def cancelOrders(self):
         self.api.update_status(self.api.stock_account)
@@ -308,9 +326,9 @@ class GridBot:
             price=self.stockBid[symbol],
             quantity=qty,
             action=direction,
-            price_type=shioaji.constant.StockPriceType.LMT,
-            order_type=shioaji.constant.OrderType.ROD,
-            order_lot=shioaji.constant.StockOrderLot.IntradayOdd,
+            price_type=sj.constant.StockPriceType.LMT,
+            order_type=sj.constant.OrderType.ROD,
+            order_lot=sj.constant.StockOrderLot.IntradayOdd,
             account=self.api.stock_account,
         )
 
@@ -346,7 +364,7 @@ class GridBot:
 
                         order = self.createOrdObj(
                             symbol=self.upperid,
-                            direction=shioaji.constant.Action.Buy,
+                            direction=sj.constant.Action.Buy,
                             qty=quantityUpper,
                         )
                         trade = self.api.place_order(contract, order)
@@ -354,7 +372,7 @@ class GridBot:
                 else:
                     order = self.createOrdObj(
                         symbol=self.upperid,
-                        direction=shioaji.constant.Action.Sell,
+                        direction=sj.constant.Action.Sell,
                         qty=abs(quantityUpper),
                     )
                     trade = self.api.place_order(contract, order)
