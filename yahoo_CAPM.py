@@ -60,7 +60,10 @@ try:
 except ImportError as e:
     print(f"ImportError: {e}")
 
-
+########################################################################################################################################################################
+########################################################################################################################################################################
+########################################################################################################################################################################
+########################################################################################################################################################################
 def main():
     # stocks_df = pd.DataFrame()
     symbols = [
@@ -262,6 +265,10 @@ def main():
         return w1, w2
 
     ###################################################################################
+    #
+    #
+    #
+    ###################################################################################
     dbName = "1d"
     collectionName = "capm"
 
@@ -306,9 +313,9 @@ def main():
     # risk_aversion = 2
 
     betas, alphas = calculate_betas(df)
-
+    misc.pickle_dump('betas.pkl', betas)
     # r_square[stock] = model.score(x_pct, y_pct)
-    # print(f'stock: {stock}, alpha: {alpha[stock]}, beta: {beta[stock]}')
+    print(f'betas: {betas}')
 
     w1_symbol = "2330"
     # w1_symbol = "0052_tw"
@@ -319,7 +326,8 @@ def main():
     print(f"Weight for {w2_symbol}:, {w2}")
     weights[w1_symbol] = w1
     weights[w2_symbol] = w2
-    misc.pickle_dump("weights", weights)
+    misc.pickle_dump("weights.pkl", weights)
+   
     
     # regression_line = beta * df_daily_ret["^twii"] + alpha[i]
     # axes[i].plot(df_daily_ret["^twii"], regression_line, "-", color="r")
