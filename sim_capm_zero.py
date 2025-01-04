@@ -1,5 +1,6 @@
 import time
 import shioaji.order as stOrder
+import pandas as pd
 
 # import shioaji.shioaji
 import shioaji as sj
@@ -14,7 +15,7 @@ from shioaji.constant import (
 )
 
 import logging
-import datetime
+from datetime import date, datetime, timedelta
 from threading import Lock
 
 # 處理ticks即時資料更新的部分
@@ -41,32 +42,27 @@ sys.path.insert(0, str(helpers_dir))
 try:
     import ShioajiLogin as mysj  # import shioajiLogin, get_snapshots
     import misc
+    import yf_data as yfin
 except ImportError as e:
     print(f"ImportError: {e}")
 
 
-def get_tick_unit(stock_price: float) -> float:
-    """
-    Returns the fluctuation unit (TICK) for the given stock price.
+def get_theory_prices(api, betas, symbols, bot):
+    contract = api.Contracts.Indexs.TSE.TSE001
+    current_index = api.snapshots([contract])[0].close
+    stk_ret_pct = {}
+    diffs = {}
+    theory_prices = {}
+    mkt_ret_pct = ((current_index - bot.previous_close_index) / bot.previous_close_index) * 100
+    snapshots = mysj.get_snapshots(api, symbols)
+    for symbol in symbols:
+        stk_ret_pct[symbol] = (
+            (snapshots[symbol].close - bot.previous_close_prices[symbol]) / bot.previous_close_prices[symbol]
+        ) * 100
+        diffs[symbol] = stk_ret_pct[symbol] - betas[symbol + "_tw"] * mkt_ret_pct
+        theory_prices[symbol] = bot.previous_close_prices[symbol] * (1 + betas[symbol + "_tw"] * mkt_ret_pct / 100)
 
-    Args:
-            stock_price (float): The current stock price.
-
-    Returns:
-            float: The TICK value for the stock price.
-    """
-    if stock_price < 10:
-        return 0.01
-    elif stock_price < 50:
-        return 0.05
-    elif stock_price < 100:
-        return 0.1
-    elif stock_price < 500:
-        return 0.5
-    elif stock_price < 1000:
-        return 1.0
-    else:
-        return 5.0
+    return theory_prices
 
 
 def calculate_allocate(total_money: int, snapshots: dict, weights: dict) -> dict:
@@ -81,6 +77,12 @@ def calculate_allocate(total_money: int, snapshots: dict, weights: dict) -> dict
 
     # Reallocate money based on scaled total money and original weights
     g_upperid_shares = int(scaled_total_money * weights[g_upperid] // snapshots[g_upperid])
+
+    # just for verifying
+    # t=g_lowerid_shares * snapshots[g_lowerid]+g_upperid_shares*snapshots[g_upperid]
+    # l=t*weights[g_lowerid]/snapshots[g_lowerid]
+    # u=t*weights[g_upperid]/snapshots[g_upperid]
+
     return {
         g_upperid: g_upperid_shares,
         g_lowerid: g_lowerid_shares,
@@ -93,14 +95,7 @@ def calculate_profit(buy_price: float, sell_price: float, quantity: int) -> int:
     service_fee = float(0.001425 * discount)
     tax = 0.001
 
-    """Calculates the net profit from a stock transaction.
-	股價               TICK股價升降單位
-	每股市價未滿10元	0.01元
-	10元至未滿50元	    0.05元
-	50元至未滿100元	    0.1元
-	100元至未滿500元	0.5元
-	500元至未滿1000元	1元
-	1000元以上	        5元
+    """Calculates the net profit from a stock transaction.	
 	Args:
 		buy_price (float): The purchase price per share.
 		sell_price (float): The selling price per share.
@@ -122,34 +117,35 @@ class GridBot:
     Dependency Injection: This promotes loose coupling between classes, making the Bot class more reusable and testable.
     """
 
-    def __init__(self, api, logging: logging.Logger):
-        # self.stockPrice = {upperId: 0, lowerId: 0}
-        # self.stockPrice = {}
-        self.msglist = []
-        self.statlist = []
+    def __init__(self, api, symbols: List):
         self.bought_prices = {}
         self.sell_price = {}
-        self.shares_to_buy={}
+        self.shares_to_buy = {}
         self.pos = {}
-        self.snapshots={}
+        self.snapshots = {}
         self.trades = {}
+        self.tick_value = {}
+        self.previous_close_prices = {}
         self.taken_profit = 0
-        # self.deal_cnt = 0
-        self.mutexmsg = Lock()
-        self.mutexstat = Lock()
         self.api = api
-        self.logging = logging
         self.api.set_order_callback(self.order_cb)
+        self.snapshots = mysj.get_snapshots(self.api, symbols)
+        for symbol in symbols:
+            contract = self.api.Contracts.Stocks.TSE[symbol]
+            self.previous_close_prices[symbol] = contract.reference
+            self.tick_value[symbol] = misc.get_tick_unit(self.snapshots[symbol].close)
+        contract = api.Contracts.Indexs.TSE.TSE001
+        end_date = misc.get_today()
+        start_date = misc.sub_N_Days(15)
+        pd = yfin.download_data("^TWII", interval="1d", start=start_date, end=end_date)
+        self.previous_close_index = pd.Close.iloc[-1]
 
     def get_position_qty(self, symbol) -> int:
         try:
             positions = self.api.list_positions(self.api.stock_account, unit=sj.constant.Unit.Share)
-            for pos in positions:
-                if pos.code == symbol:
-                    return pos.quantity
-            return 0  # default to 0 if the stock is not found
+            return next((pos.quantity for pos in positions if pos.code == symbol), 0)         
         except sj.error.TokenError as e:
-            self.logging.error(f"Token error: {e.detail}")
+            logging.error(f"Token error: {e.detail}")
             return 0
 
     def buy(self, symbol, price, quantity):
@@ -194,7 +190,7 @@ class GridBot:
             trade = self.api.place_order(contract, order)
             print(f"Placed odd lot {action} order for {symbol}: {odd_lot_qty} shares @{price}")
         # log the most crucial info for record
-        self.logging.info(f"trade: {trade}")
+        logging.info(f"trade: {trade}")
         print("trade:", trade)
         return trade
         # print("status:", trade.status.status)
@@ -227,11 +223,11 @@ class GridBot:
                 #     trade = self.api.update_status(
                 #         account=self.api.stock_account)
                 self.api.update_status(self.api.stock_account)
-                self.logging.info(
+                logging.info(
                     f"order cancelled: {trade.contract.code}/{trade.status.status}, cqty {trade.status.cancel_quantity}"
                 )
             except Exception as e:
-                self.logging.error(f"Error canceling order {e}")
+                logging.error(f"Error canceling order {e}")
 
     # 處理訂單成交的狀況,用來更新交割款
     # order_cb confirmed ok.
@@ -250,15 +246,13 @@ class GridBot:
                     self.bought_price[code] = price
                 elif action == ACTION_SELL:
                     self.taken_profit += calculate_profit(
-                        buy_price=self.bought_price[code],
+                        buy_price=self.bought_prices[code],
                         sell_price=price,
                         quantity=quantity,
                     )
-                # self.deal_cnt += 1
-
                 # self.msglist.append(msg)
                 # s = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                self.logging.info(f"Deal: {action} {code} {quantity} @ {price}")
+                logging.info(f"Deal: {action} {code} {quantity} @ {price}")
 
             # with self.mutexstat:
             #     self.statlist.append(stat)
@@ -283,13 +277,11 @@ class GridBot:
                 if all(trade.status.status in completed_status for trade in relevant_trades):
                     break  # Exit loop if all relevant trades are completed
             except Exception as e:
-                self.logging.error(f"Error checking specific trade statuses: {e}")
+                logging.error(f"Error checking specific trade statuses: {e}")
                 break  # Exit loop in case of API failure or error
 
             time.sleep(3)
 
-
-# shares_to_buy = {g_upperid: 0, g_lowerid: 0}
 
 #######################################################################################################################
 #######################################################################################################################
@@ -305,47 +297,41 @@ symbols = [g_upperid.upper(), g_lowerid.upper()]
 
 
 def main():
-    expected_profit = 106
-    # fees = 0.385 / 100
-    fees = 0.4 / 100
-    total_amount = 30000
-    weights = misc.pickle_read("weights")
-    # weights = {g_upperid: 0.425652829531973, g_lowerid: 0.5743471704680267}
-    mutexDict = {symbols[0]: Lock(), symbols[1]: Lock()}
-    cooldown = 15
-    # sleep to n seconds
-    til_second = 10
-
-    # snapshots = {}
-    # prev_snapshots = {}
-
-    api = mysj.shioajiLogin(simulation=False)
-
-    # 創建交易機器人物件
     logging.basicConfig(
         filename="capm_zero_beta.log",
         level=logging.INFO,
         format="%(asctime)s %(levelname)s: %(message)s",  # auto insert current time, and logging level, just as INFO, DEBUG...
     )
 
-    # lowerid_1mk = mysj.Candle_Data(api=api, symbol=g_lowerid, period=1)
-    # upperid_1mk = mysj.Candle_Data(api=api, symbol=g_upperid, period=1)
+    expected_profit = 10
+    # fees = 0.385 / 100
+    fees = 0.4 / 100
+    total_amount = 30000
+    weights = misc.pickle_read("weights.pkl")
+    betas = misc.pickle_read("betas.pkl")
+    # weights = {g_upperid: 0.425652829531973, g_lowerid: 0.5743471704680267}
+    mutexDict = {symbols[0]: Lock(), symbols[1]: Lock()}
+    cooldown = 15
+    # sleep to n seconds
+    til_second = 10
 
-    bot = GridBot(api, logging)
+    api = mysj.shioajiLogin(simulation=False)
 
+    bot = GridBot(api, symbols=symbols)
     bot.pos = {symbol: bot.get_position_qty(symbol) for symbol in symbols}
     print(bot.pos)
     # todo: maybe just one stock has value, so need to save taken_profit in case not all stocks
-    if any(bot.pos.values()):      
+    if any(bot.pos.values()):
         # bot.bought_prices = {"2330": 1075, "00664R": 3.72}
-        # misc.pickle_dump('bought_prices', bot.bought_prices)
-        bot.bought_prices = misc.pickle_read("bought_prices")
-        print("bought price:", bot.bought_prices)
+        # misc.pickle_dump("bought_prices.pkl", bot.bought_prices)
+
+        bot.bought_prices = misc.pickle_read("bought_prices.pkl")
+        print(f"bought price:, {bot.bought_prices}")
+        # this is for handling unfilled shares
         bot.shares_to_buy = calculate_allocate(total_amount, bot.bought_prices, weights)
 
-        bot.taken_profit = 0
         try:
-            while any(bot.pos.values()):
+            while True:  # any(bot.pos.values()):
                 # time.sleep(10)
                 # -------------------------------------------------------------------------
                 # 1. cancel open orders
@@ -358,14 +344,14 @@ def main():
 
                 # 3. fetch latest market snapshots
                 bot.snapshots = mysj.get_snapshots(api, symbols)
-                print(f"snapshots:, {bot.snapshots}, pos: {bot.pos}")
+                [print(f"Close price for {code}: {snapshot.close}") for code, snapshot in bot.snapshots.items()]
 
                 # 4. compute profit
                 current_net_profit = sum(
-                    calculate_profit(bot.bought_prices[symbol], bot.snapshots[symbol], bot.pos[symbol])
+                    calculate_profit(bot.bought_prices[symbol], bot.snapshots[symbol].close, bot.pos[symbol])
                     for symbol in symbols
                 )
-                print(f"current net profit: {current_net_profit} / taken profit: {bot.taken_profit}")
+                print(f"current net profit: {current_net_profit}, taken profit: {bot.taken_profit}")
 
                 # todo: if partial filled, net_profit should be recalucated!!!
                 if current_net_profit >= expected_profit - bot.taken_profit:
@@ -375,31 +361,38 @@ def main():
                             bot.trades[symbol] = bot.sell(
                                 symbol=symbol,
                                 quantity=bot.pos[symbol],
-                                price=bot.snapshots[symbol],
+                                price=bot.snapshots[symbol].close,
                             )
                     time.sleep(30)
-                # net profit less than expectattion and no sell transaction has been done.
+                # net profit less than expectattion and no sell transaction has been done, at this point, refill any previsouly buy shortage.
                 elif bot.taken_profit == 0:
                     prev_unfilled_shares = {symbol: bot.shares_to_buy[symbol] - bot.pos[symbol] for symbol in symbols}
                     # key_of_zero = next((k for k, v in bot.pos.items() if v == 0), None)
                     # if key_of_zero is not None and bot.taken_profit == 0:
+                    # cond1 = bot.snapshots[g_upperid].change_rate < 0 and bot.snapshots[g_lowerid].change_rate <= 0
+                    # theory_prices = get_theory_prices(api, symbols=symbols, bot=bot)
+                    # cond2 = all(theory_prices[symbol] > bot.snapshots[symbol].close - 2*bot.tick_value[symbol] for symbol in symbols)
                     if any(prev_unfilled_shares.values()):
                         for symbol in symbols:
-                            if prev_unfilled_shares[symbol] > 0 and bot.snapshots[symbol] < bot.bought_prices[symbol]:
+                            if (
+                                prev_unfilled_shares[symbol] > 0
+                                and bot.snapshots[symbol].close <= bot.bought_prices[symbol]-2*bot.tick_value[symbol]
+                                and bot.snapshots[symbol].change_rate <= 0
+                            ):
                                 bot.trades[symbol] = bot.buy(
                                     symbol=symbol,
                                     quantity=prev_unfilled_shares[symbol],
-                                    price=bot.snapshots[symbol],
+                                    price=bot.snapshots[symbol].close,
                                 )
-                                print(f"buy0 {symbol} {prev_unfilled_shares[symbol]}@{bot.snapshots[symbol]}")
-                        time.sleep(30)
+                                print(f"buy0 {symbol} {prev_unfilled_shares[symbol]}@{bot.snapshots[symbol].close}")
+                        time.sleep(20)
 
                 current_time = time.time()
                 time_to_sleep = cooldown - (current_time % cooldown) + til_second
                 # sleep between 20 second to 80 second, should be wait till fully filled.
                 time.sleep(time_to_sleep)
 
-                now = datetime.datetime.now()
+                now = datetime.now()
                 # every 3 minutes
                 if now.minute % 3 == 0:
                     pass
@@ -423,36 +416,33 @@ def main():
     #################################################################################
     # empty hand, ask if want to buy
     elif misc.get_user_confirmation(question="buy"):
-        
-        
-        bot.snapshots = mysj.get_snapshots(api, symbols)
-        prev_snapshots = bot.snapshots.copy()
+        # bot.snapshots = mysj.get_snapshots(api, symbols)
         bot.shares_to_buy = calculate_allocate(total_amount, bot.snapshots, weights)
-
+        bot.pos = {symbol: bot.get_position_qty(symbol) for symbol in symbols}
         # always break at here to find a good pair of prices before submitting!!!
         # watch for mkt data, 2330 stock price the lower the better when 00664r price fixs!!!
-        pct_change = {}
-        bot.trades = {}
-        bot.pos = {symbol: bot.get_position_qty(symbol) for symbol in symbols}
-        #
-        while not all(bot.shares_to_buy[symbol] == bot.pos[symbol] for symbol in symbols): #True: # all(value == 0 for value in bot.trades.values()):
+        while True:
             time.sleep(25)
             # 1. cancel open orders
             bot.cancelOrders()
             # 2. get positions
             bot.snapshots = mysj.get_snapshots(api, symbols)
 
-            for symbol in symbols:
-                pct_change[symbol] = (bot.snapshots[symbol] - prev_snapshots[symbol]) / prev_snapshots[symbol] * 100
-            prev_snapshots = bot.snapshots.copy()
-            print(f"spread: {pct_change[g_upperid]-pct_change[g_lowerid]}")
-            if pct_change[g_upperid] < 0 and pct_change[g_lowerid] <= 0:
-                print(f"shares_to_buy:{bot.shares_to_buy}, @price {bot.snapshots}")
+            # for symbol in symbols:
+            #     pct_change[symbol] = (bot.snapshots[symbol] - prev_snapshots[symbol]) / prev_snapshots[symbol] * 100
+            # prev_snapshots = bot.snapshots.copy()
+            # print(f"spread: {pct_change[g_upperid]-pct_change[g_lowerid]}")
+            cond1 = bot.snapshots[g_upperid].change_rate < 0 and bot.snapshots[g_lowerid].change_rate <= 0
+            theory_prices = get_theory_prices(api, symbols=symbols, bot=bot)
+            cond2 = all(theory_prices[symbol] > bot.snapshots[symbol].close - 2*bot.tick_value[symbol] for symbol in symbols)
+
+            if cond1 and cond2:
+                [print(f"shares_to_buy:{bot.shares_to_buy}, @price {s.code}:{s.close}") for s in bot.snapshots]
                 for symbol in symbols:
                     bot.trades[symbol] = bot.buy(
                         symbol=symbol,
                         quantity=bot.shares_to_buy[symbol],
-                        price=bot.snapshots[symbol],
+                        price=bot.snapshots[symbol].close,
                     )
 
                 try:
@@ -462,13 +452,14 @@ def main():
                             # trade status will be updated automatically
                             api.update_status(api.stock_account, trade=trade)
                             print(f"{trade.contract.code}/{trade.status.status}")
-                        time.sleep(15)
-                    misc.pickle_dump("bought_prices", bot.snapshots)
+                        time.sleep(20)
+                    misc.pickle_dump("bought_prices.pkl", bot.bought_prices)
                     api.logout
                     break
                 except KeyboardInterrupt:
                     print("\n my Ctrl-C detected. Exiting gracefully...")
-                    misc.pickle_dump("bought_prices", bot.snapshots)
+                    if any(bot.bought_prices.values()):
+                        misc.pickle_dump("bought_prices.pkl", bot.bought_prices)
                     api.logout()
                     exit()
             bot.pos = {symbol: bot.get_position_qty(symbol) for symbol in symbols}
