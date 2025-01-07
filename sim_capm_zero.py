@@ -47,36 +47,18 @@ except ImportError as e:
     print(f"ImportError: {e}")
 
 
-def get_theory_prices(api, betas, symbols, bot):
-    contract = api.Contracts.Indexs.TSE.TSE001
-    current_index = api.snapshots([contract])[0].close
-    stk_ret_pct = {}
-    diffs = {}
-    theory_prices = {}
-    mkt_ret_pct = ((current_index - bot.previous_close_index) / bot.previous_close_index) * 100
-    snapshots = mysj.get_snapshots(api, symbols)
-    for symbol in symbols:
-        stk_ret_pct[symbol] = (
-            (snapshots[symbol].close - bot.previous_close_prices[symbol]) / bot.previous_close_prices[symbol]
-        ) * 100
-        diffs[symbol] = stk_ret_pct[symbol] - betas[symbol + "_tw"] * mkt_ret_pct
-        theory_prices[symbol] = bot.previous_close_prices[symbol] * (1 + betas[symbol + "_tw"] * mkt_ret_pct / 100)
-
-    return theory_prices
-
-
 def calculate_allocate(total_money: int, snapshots: dict, weights: dict) -> dict:
-    g_lowerid_shares = int(total_money * weights[g_lowerid] // snapshots[g_lowerid])
+    g_lowerid_shares = int(total_money * weights[g_lowerid] // snapshots[g_lowerid].close)
     # Adjust shares of the fixed stock to be a multiple of 1000
     g_lowerid_shares = (g_lowerid_shares // 1000) * 1000
-    g_lowerid_cost = g_lowerid_shares * snapshots[g_lowerid]
+    g_lowerid_cost = g_lowerid_shares * snapshots[g_lowerid].close
 
     # Calculate the scale factor to maintain the same weights
     scale_factor = g_lowerid_cost / (total_money * weights[g_lowerid])
     scaled_total_money = total_money * scale_factor
 
     # Reallocate money based on scaled total money and original weights
-    g_upperid_shares = int(scaled_total_money * weights[g_upperid] // snapshots[g_upperid])
+    g_upperid_shares = int(scaled_total_money * weights[g_upperid] // snapshots[g_upperid].close)
 
     # just for verifying
     # t=g_lowerid_shares * snapshots[g_lowerid]+g_upperid_shares*snapshots[g_upperid]
@@ -89,28 +71,7 @@ def calculate_allocate(total_money: int, snapshots: dict, weights: dict) -> dict
     }
 
 
-def calculate_profit(buy_price: float, sell_price: float, quantity: int) -> int:
-    # Transaction Costs is the key. break even: 0.208% after discount
-    discount = 0.38
-    service_fee = float(0.001425 * discount)
-    tax = 0.001
-
-    """Calculates the net profit from a stock transaction.	
-	Args:
-		buy_price (float): The purchase price per share.
-		sell_price (float): The selling price per share.
-		quantity (int): The number of shares.
-	Returns:
-		float: The net profit from the transaction.
-	"""
-    total_cost = round(quantity * buy_price * (1 + discount * service_fee))
-    total_proceeds = round(quantity * sell_price)
-    total_fees = round(total_proceeds * (service_fee + tax))
-    net_profit = total_proceeds - total_cost - total_fees
-
-    return net_profit
-
-
+'''
 class GridBot:
     """
     passing in api for
@@ -143,7 +104,7 @@ class GridBot:
     def get_position_qty(self, symbol) -> int:
         try:
             positions = self.api.list_positions(self.api.stock_account, unit=sj.constant.Unit.Share)
-            return next((pos.quantity for pos in positions if pos.code == symbol), 0)         
+            return next((pos.quantity for pos in positions if pos.code == symbol), 0)
         except sj.error.TokenError as e:
             logging.error(f"Token error: {e.detail}")
             return 0
@@ -281,7 +242,7 @@ class GridBot:
                 break  # Exit loop in case of API failure or error
 
             time.sleep(3)
-
+'''
 
 #######################################################################################################################
 #######################################################################################################################
@@ -297,12 +258,6 @@ symbols = [g_upperid.upper(), g_lowerid.upper()]
 
 
 def main():
-    logging.basicConfig(
-        filename="capm_zero_beta.log",
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s: %(message)s",  # auto insert current time, and logging level, just as INFO, DEBUG...
-    )
-
     expected_profit = 10
     # fees = 0.385 / 100
     fees = 0.4 / 100
@@ -315,9 +270,10 @@ def main():
     # sleep to n seconds
     til_second = 10
 
-    api = mysj.shioajiLogin(simulation=False)
+    # api = mysj.shioajiLogin(simulation=False)
 
-    bot = GridBot(api, symbols=symbols)
+    bot = mysj.Bot(symbols=symbols, sim=False)
+
     bot.pos = {symbol: bot.get_position_qty(symbol) for symbol in symbols}
     print(bot.pos)
     # todo: maybe just one stock has value, so need to save taken_profit in case not all stocks
@@ -343,12 +299,12 @@ def main():
                     break
 
                 # 3. fetch latest market snapshots
-                bot.snapshots = mysj.get_snapshots(api, symbols)
+                bot.snapshots = bot.get_snapshots(symbols)
                 [print(f"Close price for {code}: {snapshot.close}") for code, snapshot in bot.snapshots.items()]
 
                 # 4. compute profit
                 current_net_profit = sum(
-                    calculate_profit(bot.bought_prices[symbol], bot.snapshots[symbol].close, bot.pos[symbol])
+                    misc.calculate_profit(bot.bought_prices[symbol], bot.snapshots[symbol].close, bot.pos[symbol])
                     for symbol in symbols
                 )
                 print(f"current net profit: {current_net_profit}, taken profit: {bot.taken_profit}")
@@ -361,7 +317,7 @@ def main():
                             bot.trades[symbol] = bot.sell(
                                 symbol=symbol,
                                 quantity=bot.pos[symbol],
-                                price=bot.snapshots[symbol].close,
+                                price=bot.snapshots[symbol].close,  # -bot.tick_value[symbol],
                             )
                     time.sleep(30)
                 # net profit less than expectattion and no sell transaction has been done, at this point, refill any previsouly buy shortage.
@@ -374,9 +330,13 @@ def main():
                     # cond2 = all(theory_prices[symbol] > bot.snapshots[symbol].close - 2*bot.tick_value[symbol] for symbol in symbols)
                     if any(prev_unfilled_shares.values()):
                         for symbol in symbols:
+                            cond1 = prev_unfilled_shares[symbol] > 0
+                            # cond2 = bot.snapshots[symbol].change_rate <= 0
+                            cond3 = bot.snapshots[symbol].close <= bot.bought_prices[symbol] - bot.tick_value[symbol]
                             if (
                                 prev_unfilled_shares[symbol] > 0
-                                and bot.snapshots[symbol].close <= bot.bought_prices[symbol]-2*bot.tick_value[symbol]
+                                and bot.snapshots[symbol].close
+                                <= bot.bought_prices[symbol] - 2 * bot.tick_value[symbol]
                                 and bot.snapshots[symbol].change_rate <= 0
                             ):
                                 bot.trades[symbol] = bot.buy(
@@ -404,40 +364,41 @@ def main():
         except KeyboardInterrupt:
             print("\n my Ctrl-C detected. Exiting gracefully...")
             # bot.cancelOrders()
-            try:
-                api.logout()
-            except Exception as e:
-                print("An error occurred:", e)
-            finally:
-                print("This code is always executed, regardless of whether an exception occurred or not")
-            print("end")
+            bot.logout()
             exit
 
     #################################################################################
     # empty hand, ask if want to buy
     elif misc.get_user_confirmation(question="buy"):
-        # bot.snapshots = mysj.get_snapshots(api, symbols)
+        bot.snapshots = bot.get_snapshots()
         bot.shares_to_buy = calculate_allocate(total_amount, bot.snapshots, weights)
-        bot.pos = {symbol: bot.get_position_qty(symbol) for symbol in symbols}
+        # bot.pos = {symbol: bot.get_position_qty(symbol) for symbol in symbols}
         # always break at here to find a good pair of prices before submitting!!!
         # watch for mkt data, 2330 stock price the lower the better when 00664r price fixs!!!
         while True:
-            time.sleep(25)
             # 1. cancel open orders
             bot.cancelOrders()
-            # 2. get positions
-            bot.snapshots = mysj.get_snapshots(api, symbols)
+            # 2. get snapshots
+            bot.snapshots = bot.get_snapshots()
+            # 3. get pos
+            # bot.pos = {symbol: bot.geyt_position_qty(symbol) for symbol in symbols}
 
             # for symbol in symbols:
             #     pct_change[symbol] = (bot.snapshots[symbol] - prev_snapshots[symbol]) / prev_snapshots[symbol] * 100
             # prev_snapshots = bot.snapshots.copy()
             # print(f"spread: {pct_change[g_upperid]-pct_change[g_lowerid]}")
             cond1 = bot.snapshots[g_upperid].change_rate < 0 and bot.snapshots[g_lowerid].change_rate <= 0
-            theory_prices = get_theory_prices(api, symbols=symbols, bot=bot)
-            cond2 = all(theory_prices[symbol] > bot.snapshots[symbol].close - 2*bot.tick_value[symbol] for symbol in symbols)
-
+            theory_prices = bot.get_theory_prices(betas=betas, snapshots=bot.snapshots)
+            cond2 = bot.snapshots[g_lowerid].close <= theory_prices[g_lowerid]
+            # cond2 = all(
+            #     theory_prices[symbol] > bot.snapshots[symbol].close - 2 * bot.tick_value[symbol] for symbol in symbols
+            # )
+            [print(f"theory: {theory_prices}, snapshots: {bot.snapshots[symbol].close}") for symbol in symbols]
             if cond1 and cond2:
-                [print(f"shares_to_buy:{bot.shares_to_buy}, @price {s.code}:{s.close}") for s in bot.snapshots]
+                [
+                    print(f"shares_to_buy:{bot.shares_to_buy}, @price {bot.snapshots[symbol].close}")
+                    for symbol in symbols
+                ]
                 for symbol in symbols:
                     bot.trades[symbol] = bot.buy(
                         symbol=symbol,
@@ -450,22 +411,25 @@ def main():
                     while not all(trade.status.status == "Filled" for trade in bot.trades.values()):
                         for trade in bot.trades.values():
                             # trade status will be updated automatically
-                            api.update_status(api.stock_account, trade=trade)
+                            bot.api.update_status(bot.api.stock_account, trade=trade)
                             print(f"{trade.contract.code}/{trade.status.status}")
                         time.sleep(20)
                     misc.pickle_dump("bought_prices.pkl", bot.bought_prices)
-                    api.logout
+                    bot.logout
                     break
                 except KeyboardInterrupt:
                     print("\n my Ctrl-C detected. Exiting gracefully...")
                     if any(bot.bought_prices.values()):
                         misc.pickle_dump("bought_prices.pkl", bot.bought_prices)
-                    api.logout()
+                    bot.logout()
                     exit()
-            bot.pos = {symbol: bot.get_position_qty(symbol) for symbol in symbols}
+
+            time.sleep(25)
+            # Print a separator with a message
+            print("-" * 80)
     else:
         print("END: empty-handed and do nothing.")
-        api.logout()
+        bot.logout()
 
 
 if __name__ == "__main__":
