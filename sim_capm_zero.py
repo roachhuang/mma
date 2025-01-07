@@ -270,10 +270,7 @@ def main():
     # sleep to n seconds
     til_second = 10
 
-    # api = mysj.shioajiLogin(simulation=False)
-
     bot = mysj.Bot(symbols=symbols, sim=False)
-
     bot.pos = {symbol: bot.get_position_qty(symbol) for symbol in symbols}
     print(bot.pos)
     # todo: maybe just one stock has value, so need to save taken_profit in case not all stocks
@@ -288,8 +285,6 @@ def main():
 
         try:
             while True:  # any(bot.pos.values()):
-                # time.sleep(10)
-                # -------------------------------------------------------------------------
                 # 1. cancel open orders
                 bot.cancelOrders()
 
@@ -325,20 +320,14 @@ def main():
                     prev_unfilled_shares = {symbol: bot.shares_to_buy[symbol] - bot.pos[symbol] for symbol in symbols}
                     # key_of_zero = next((k for k, v in bot.pos.items() if v == 0), None)
                     # if key_of_zero is not None and bot.taken_profit == 0:
-                    # cond1 = bot.snapshots[g_upperid].change_rate < 0 and bot.snapshots[g_lowerid].change_rate <= 0
                     # theory_prices = get_theory_prices(api, symbols=symbols, bot=bot)
                     # cond2 = all(theory_prices[symbol] > bot.snapshots[symbol].close - 2*bot.tick_value[symbol] for symbol in symbols)
                     if any(prev_unfilled_shares.values()):
                         for symbol in symbols:
                             cond1 = prev_unfilled_shares[symbol] > 0
+                            cond2 = bot.snapshots[symbol].close <= bot.bought_prices[symbol] - bot.tick_value[symbol]
                             # cond2 = bot.snapshots[symbol].change_rate <= 0
-                            cond3 = bot.snapshots[symbol].close <= bot.bought_prices[symbol] - bot.tick_value[symbol]
-                            if (
-                                prev_unfilled_shares[symbol] > 0
-                                and bot.snapshots[symbol].close
-                                <= bot.bought_prices[symbol] - 2 * bot.tick_value[symbol]
-                                and bot.snapshots[symbol].change_rate <= 0
-                            ):
+                            if cond1 and cond2:
                                 bot.trades[symbol] = bot.buy(
                                     symbol=symbol,
                                     quantity=prev_unfilled_shares[symbol],
@@ -355,7 +344,8 @@ def main():
                 now = datetime.now()
                 # every 3 minutes
                 if now.minute % 3 == 0:
-                    pass
+                    bot.pos = {symbol: bot.get_position_qty(symbol) for symbol in symbols}
+                    print(f"pos: {bot.pos}")
                 print("-" * 80)  # Optional separator
 
             # reconfirm, maybe not necessary
@@ -370,6 +360,7 @@ def main():
     #################################################################################
     # empty hand, ask if want to buy
     elif misc.get_user_confirmation(question="buy"):
+        bot.bought_prices = {}
         bot.snapshots = bot.get_snapshots()
         bot.shares_to_buy = calculate_allocate(total_amount, bot.snapshots, weights)
         # bot.pos = {symbol: bot.get_position_qty(symbol) for symbol in symbols}
@@ -383,18 +374,12 @@ def main():
             # 3. get pos
             # bot.pos = {symbol: bot.geyt_position_qty(symbol) for symbol in symbols}
 
-            # for symbol in symbols:
-            #     pct_change[symbol] = (bot.snapshots[symbol] - prev_snapshots[symbol]) / prev_snapshots[symbol] * 100
-            # prev_snapshots = bot.snapshots.copy()
-            # print(f"spread: {pct_change[g_upperid]-pct_change[g_lowerid]}")
             cond1 = bot.snapshots[g_upperid].change_rate < 0 and bot.snapshots[g_lowerid].change_rate <= 0
             theory_prices = bot.get_theory_prices(betas=betas, snapshots=bot.snapshots)
-            cond2 = bot.snapshots[g_lowerid].close <= theory_prices[g_lowerid]
-            # cond2 = all(
-            #     theory_prices[symbol] > bot.snapshots[symbol].close - 2 * bot.tick_value[symbol] for symbol in symbols
-            # )
+            # cond2 = bot.snapshots[g_lowerid].close <= theory_prices[g_lowerid]
+            cond2 = all(bot.snapshots[symbol].close < theory_prices[symbol] for symbol in symbols)
             [print(f"theory: {theory_prices}, snapshots: {bot.snapshots[symbol].close}") for symbol in symbols]
-            if cond1 and cond2:
+            if cond1 or cond2:
                 [
                     print(f"shares_to_buy:{bot.shares_to_buy}, @price {bot.snapshots[symbol].close}")
                     for symbol in symbols
@@ -419,7 +404,9 @@ def main():
                     break
                 except KeyboardInterrupt:
                     print("\n my Ctrl-C detected. Exiting gracefully...")
+                    key_of_zero = next((k for k, v in bot.bought_prices.items() if v == 0), None)
                     if any(bot.bought_prices.values()):
+                        bot.bought_prices[key_of_zero] = bot.snapshots[key_of_zero].close
                         misc.pickle_dump("bought_prices.pkl", bot.bought_prices)
                     bot.logout()
                     exit()
