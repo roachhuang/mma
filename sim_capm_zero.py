@@ -258,7 +258,7 @@ symbols = [g_upperid.upper(), g_lowerid.upper()]
 
 
 def main():
-    expected_profit = 10
+    expected_profit = 60
     # fees = 0.385 / 100
     fees = 0.4 / 100
     total_amount = 30000
@@ -325,7 +325,7 @@ def main():
                     if any(prev_unfilled_shares.values()):
                         for symbol in symbols:
                             cond1 = prev_unfilled_shares[symbol] > 0
-                            cond2 = bot.snapshots[symbol].close <= bot.bought_prices[symbol] - bot.tick_value[symbol]
+                            cond2 = bot.snapshots[symbol].close <= bot.bought_prices[symbol]
                             # cond2 = bot.snapshots[symbol].change_rate <= 0
                             if cond1 and cond2:
                                 bot.trades[symbol] = bot.buy(
@@ -373,8 +373,13 @@ def main():
             bot.snapshots = bot.get_snapshots()
             # 3. get pos
             # bot.pos = {symbol: bot.geyt_position_qty(symbol) for symbol in symbols}
-
-            cond1 = bot.snapshots[g_upperid].change_rate < 0 and bot.snapshots[g_lowerid].change_rate <= 0
+            if abs(bot.snapshots[g_upperid].change_rate) < bot.snapshots[g_lowerid].change_rate:
+                cond1 = False
+            else:
+                diff_pct_change = abs(bot.snapshots[g_upperid].change_rate + bot.snapshots[g_lowerid].change_rate)
+                cond1 = diff_pct_change > 0.1425 * 2 * 0.38 + 0.3
+                print(f"diff_pct_change: {diff_pct_change}")
+            # cond1 = bot.snapshots[g_upperid].change_rate < 0 and bot.snapshots[g_lowerid].change_rate <= 0
             theory_prices = bot.get_theory_prices(betas=betas, snapshots=bot.snapshots)
             # cond2 = bot.snapshots[g_lowerid].close <= theory_prices[g_lowerid]
             cond2 = all(bot.snapshots[symbol].close < theory_prices[symbol] for symbol in symbols)
@@ -393,12 +398,7 @@ def main():
 
                 try:
                     # wait till all buy orders are filled.
-                    while not all(trade.status.status == "Filled" for trade in bot.trades.values()):
-                        for trade in bot.trades.values():
-                            # trade status will be updated automatically
-                            bot.api.update_status(bot.api.stock_account, trade=trade)
-                            print(f"{trade.contract.code}/{trade.status.status}")
-                        time.sleep(20)
+                    bot.wait_till_filled()
                     misc.pickle_dump("bought_prices.pkl", bot.bought_prices)
                     bot.logout
                     break
