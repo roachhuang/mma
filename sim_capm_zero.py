@@ -48,17 +48,17 @@ except ImportError as e:
 
 
 def calculate_allocate(total_money: int, snapshots: dict, weights: dict) -> dict:
-    g_lowerid_shares = int(total_money * weights[g_lowerid] // snapshots[g_lowerid].close)
+    g_lowerid_shares = int(total_money * weights[g_lowerid] // snapshots[g_lowerid])
     # Adjust shares of the fixed stock to be a multiple of 1000
     g_lowerid_shares = (g_lowerid_shares // 1000) * 1000
-    g_lowerid_cost = g_lowerid_shares * snapshots[g_lowerid].close
+    g_lowerid_cost = g_lowerid_shares * snapshots[g_lowerid]
 
     # Calculate the scale factor to maintain the same weights
     scale_factor = g_lowerid_cost / (total_money * weights[g_lowerid])
     scaled_total_money = total_money * scale_factor
 
     # Reallocate money based on scaled total money and original weights
-    g_upperid_shares = int(scaled_total_money * weights[g_upperid] // snapshots[g_upperid].close)
+    g_upperid_shares = int(scaled_total_money * weights[g_upperid] // snapshots[g_upperid])
 
     # just for verifying
     # t=g_lowerid_shares * snapshots[g_lowerid]+g_upperid_shares*snapshots[g_upperid]
@@ -258,7 +258,7 @@ symbols = [g_upperid.upper(), g_lowerid.upper()]
 
 
 def main():
-    expected_profit = 60
+    expected_profit = -38
     # fees = 0.385 / 100
     fees = 0.4 / 100
     total_amount = 30000
@@ -275,7 +275,7 @@ def main():
     print(bot.pos)
     # todo: maybe just one stock has value, so need to save taken_profit in case not all stocks
     if any(bot.pos.values()):
-        # bot.bought_prices = {"2330": 1075, "00664R": 3.72}
+        # bot.bought_prices = {"2330": 1110, "00664R": 3.63}
         # misc.pickle_dump("bought_prices.pkl", bot.bought_prices)
 
         bot.bought_prices = misc.pickle_read("bought_prices.pkl")
@@ -294,14 +294,15 @@ def main():
                     break
 
                 # 3. fetch latest market snapshots
-                bot.snapshots = bot.get_snapshots(symbols)
+                bot.snapshots = bot.get_snapshots()
                 [print(f"Close price for {code}: {snapshot.close}") for code, snapshot in bot.snapshots.items()]
 
                 # 4. compute profit
                 current_net_profit = sum(
                     misc.calculate_profit(bot.bought_prices[symbol], bot.snapshots[symbol].close, bot.pos[symbol])
-                    for symbol in symbols
+                    for symbol in bot.pos.keys() if bot.pos[symbol] > 0
                 )
+                
                 print(f"current net profit: {current_net_profit}, taken profit: {bot.taken_profit}")
 
                 # todo: if partial filled, net_profit should be recalucated!!!
@@ -314,7 +315,7 @@ def main():
                                 quantity=bot.pos[symbol],
                                 price=bot.snapshots[symbol].close,  # -bot.tick_value[symbol],
                             )
-                    time.sleep(30)
+                    time.sleep(50)
                 # net profit less than expectattion and no sell transaction has been done, at this point, refill any previsouly buy shortage.
                 elif bot.taken_profit == 0:
                     prev_unfilled_shares = {symbol: bot.shares_to_buy[symbol] - bot.pos[symbol] for symbol in symbols}
@@ -362,7 +363,8 @@ def main():
     elif misc.get_user_confirmation(question="buy"):
         bot.bought_prices = {}
         bot.snapshots = bot.get_snapshots()
-        bot.shares_to_buy = calculate_allocate(total_amount, bot.snapshots, weights)
+        stk_prices = [{k: v.close} for k, v in bot.snapshots.items()]
+        bot.shares_to_buy = calculate_allocate(total_amount, stk_prices, weights)
         # bot.pos = {symbol: bot.get_position_qty(symbol) for symbol in symbols}
         # always break at here to find a good pair of prices before submitting!!!
         # watch for mkt data, 2330 stock price the lower the better when 00664r price fixs!!!
