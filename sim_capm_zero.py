@@ -70,180 +70,6 @@ def calculate_allocate(total_money: int, snapshots: dict, weights: dict) -> dict
         g_lowerid: g_lowerid_shares,
     }
 
-
-'''
-class GridBot:
-    """
-    passing in api for
-    Dependency Injection: This promotes loose coupling between classes, making the Bot class more reusable and testable.
-    """
-
-    def __init__(self, api, symbols: List):
-        self.bought_prices = {}
-        self.sell_price = {}
-        self.shares_to_buy = {}
-        self.pos = {}
-        self.snapshots = {}
-        self.trades = {}
-        self.tick_value = {}
-        self.previous_close_prices = {}
-        self.taken_profit = 0
-        self.api = api
-        self.api.set_order_callback(self.order_cb)
-        self.snapshots = mysj.get_snapshots(self.api, symbols)
-        for symbol in symbols:
-            contract = self.api.Contracts.Stocks.TSE[symbol]
-            self.previous_close_prices[symbol] = contract.reference
-            self.tick_value[symbol] = misc.get_tick_unit(self.snapshots[symbol].close)
-        contract = api.Contracts.Indexs.TSE.TSE001
-        end_date = misc.get_today()
-        start_date = misc.sub_N_Days(15)
-        pd = yfin.download_data("^TWII", interval="1d", start=start_date, end=end_date)
-        self.previous_close_index = pd.Close.iloc[-1]
-
-    def get_position_qty(self, symbol) -> int:
-        try:
-            positions = self.api.list_positions(self.api.stock_account, unit=sj.constant.Unit.Share)
-            return next((pos.quantity for pos in positions if pos.code == symbol), 0)
-        except sj.error.TokenError as e:
-            logging.error(f"Token error: {e.detail}")
-            return 0
-
-    def buy(self, symbol, price, quantity):
-        return self.place_flexible_order(symbol=symbol, action=ACTION_BUY, price=price, qty=quantity)
-
-    def sell(self, symbol, price, quantity):
-        return self.place_flexible_order(symbol=symbol, action=ACTION_SELL, price=price, qty=quantity)
-
-    def place_flexible_order(self, symbol, price, qty, action):
-        # Determine the number of regular lots and odd lot quantity
-        common_lot_qty = qty // 1000  # Regular lots (1 lot = 1000 shares)
-        odd_lot_qty = qty % 1000  # Remaining odd lot quantity
-        contract = self.api.Contracts.Stocks[symbol]
-        # Place regular lot orders if applicable
-        if common_lot_qty > 0:
-            order = self.api.Order(
-                price=price,  # contract.limit_down,
-                quantity=int(common_lot_qty),  # Total quantity in regular lots
-                action=action,
-                # price_type="MKT",
-                price_type="LMT",
-                # order_type="IOC",
-                order_type="ROD",
-                order_lot=STOCK_ORDER_LOT_COMMON,  # Regular lot
-                account=self.api.stock_account,
-            )
-            trade = self.api.place_order(contract, order)
-            print(f"Placed regular lot {action} order for {symbol}: {common_lot_qty} lot(s) @{price}")
-            # print("status:", trade.status.status)
-        # if qty like 1300 shares, and you want to place it all, change elif to if!!!
-        elif odd_lot_qty > 0:
-            order = self.api.Order(
-                price=price,  # contract.limit_down,
-                quantity=int(odd_lot_qty),  # Remaining odd lot quantity
-                action=action,
-                price_type="LMT",
-                # ROC is the only available ord type for intraday odd lot.
-                order_type="ROD",
-                order_lot=STOCK_ORDER_LOT_INTRADAY_ODD,
-                account=self.api.stock_account,
-            )
-            trade = self.api.place_order(contract, order)
-            print(f"Placed odd lot {action} order for {symbol}: {odd_lot_qty} shares @{price}")
-        # log the most crucial info for record
-        logging.info(f"trade: {trade}")
-        print("trade:", trade)
-        return trade
-        # print("status:", trade.status.status)
-
-    def cancelOrders(self) -> None:
-        # Before obtaining the Trade status, it must be updated with update_status!!!
-        self.api.update_status(self.api.stock_account)
-        tradelist = self.api.list_trades()
-        trades_to_cancel = [
-            trade
-            for trade in tradelist
-            if trade.status.status
-            not in {
-                stOrder.Status.Cancelled,
-                stOrder.Status.Failed,
-                stOrder.Status.Filled,
-            }
-            and trade.contract.code in symbols
-        ]
-
-        if len(trades_to_cancel) == 0:
-            # nothing to cancell
-            return
-
-        for trade in trades_to_cancel:
-            try:
-                self.api.cancel_order(trade=trade)
-                # wait till the order is cancelled.
-                # while trade.status.status != "Cancelled":
-                #     trade = self.api.update_status(
-                #         account=self.api.stock_account)
-                self.api.update_status(self.api.stock_account)
-                logging.info(
-                    f"order cancelled: {trade.contract.code}/{trade.status.status}, cqty {trade.status.cancel_quantity}"
-                )
-            except Exception as e:
-                logging.error(f"Error canceling order {e}")
-
-    # 處理訂單成交的狀況,用來更新交割款
-    # order_cb confirmed ok.
-    def order_cb(self, stat, msg: Dict):
-        # print(f"stat: {stat}, msg:{msg}")
-        # OrderState.StockDeal is a dict name
-        if stat == OrderState.StockDeal:
-            print(f"stk deal: {stat.StockDeal.value}, msg:{msg}")
-            # global g_settlement
-            code = msg["code"]
-            action = msg["action"]
-            price = msg["price"]
-            quantity = msg["quantity"] * 1000 if msg["order_lot"] == "Common" else msg["quantity"]
-            if code in symbols:
-                if action == ACTION_BUY:
-                    self.bought_price[code] = price
-                elif action == ACTION_SELL:
-                    self.taken_profit += calculate_profit(
-                        buy_price=self.bought_prices[code],
-                        sell_price=price,
-                        quantity=quantity,
-                    )
-                # self.msglist.append(msg)
-                # s = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                logging.info(f"Deal: {action} {code} {quantity} @ {price}")
-
-            # with self.mutexstat:
-            #     self.statlist.append(stat)
-        elif stat == OrderState.StockOrder:
-            # print(f"ord_cb: stat: {stat}, msg:{msg}")
-            pass
-
-    def wait_for_orders_to_complete(self, symbols: list) -> None:
-        """Wait until all trades for specific symbols are either Filled or Failed."""
-        completed_status = ["Filled", "Failed", "Cancelled"]
-
-        while True:
-            try:
-                self.api.update_status(account=self.api.stock_account)
-                tradelist = self.api.list_trades()  # Fetch updated trades list
-                # Filter trades only for the given symbols
-                relevant_trades = [trade for trade in tradelist if trade.contract.code in symbols]
-                for trade in relevant_trades:
-                    print(f"{trade.contract.code}/{trade.status.status}")
-
-                # Check if all relevant trades are completed
-                if all(trade.status.status in completed_status for trade in relevant_trades):
-                    break  # Exit loop if all relevant trades are completed
-            except Exception as e:
-                logging.error(f"Error checking specific trade statuses: {e}")
-                break  # Exit loop in case of API failure or error
-
-            time.sleep(3)
-'''
-
 #######################################################################################################################
 #######################################################################################################################
 # main fn. Zero-Beta Portfolio: This portfolio is constructed to have zero systematic risk, meaning its returns are not influenced by market movements.
@@ -299,10 +125,16 @@ def main():
 
                 # 4. compute profit
                 current_net_profit = sum(
-                    misc.calculate_profit(bot.bought_prices[symbol], bot.snapshots[symbol].close, bot.pos[symbol])
-                    for symbol in bot.pos.keys() if bot.pos[symbol] > 0
+                    misc.calculate_profit(
+                        bot.bought_prices[symbol],
+                        bot.snapshots[symbol].close,
+                        bot.pos[symbol],
+                        tax_rate=1 / 1000 if bot.api.Contracts.Stocks.TSE[symbol].category == "00" else 3 / 1000,
+                    )
+                    for symbol in bot.pos.keys()
+                    if bot.pos[symbol] > 0
                 )
-                
+
                 print(f"current net profit: {current_net_profit}, taken profit: {bot.taken_profit}")
 
                 # todo: if partial filled, net_profit should be recalucated!!!
@@ -326,7 +158,7 @@ def main():
                     if any(prev_unfilled_shares.values()):
                         for symbol in symbols:
                             cond1 = prev_unfilled_shares[symbol] > 0
-                            cond2 = bot.snapshots[symbol].close <= bot.bought_prices[symbol]
+                            cond2 = bot.snapshots[symbol].close <= bot.bought_prices[symbol] - bot.tick_value[symbol]
                             # cond2 = bot.snapshots[symbol].change_rate <= 0
                             if cond1 and cond2:
                                 bot.trades[symbol] = bot.buy(
@@ -354,6 +186,8 @@ def main():
             print(f"all sold. pos should be 0: {bot.pos}")
         except KeyboardInterrupt:
             print("\n my Ctrl-C detected. Exiting gracefully...")
+            # the buying of previous unfilled share may filled, so need update the file.
+            misc.pickle_dump("bought_prices.pkl", bot.bought_prices)
             # bot.cancelOrders()
             bot.logout()
             exit
