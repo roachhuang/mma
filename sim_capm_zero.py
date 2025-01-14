@@ -47,6 +47,42 @@ except ImportError as e:
     print(f"ImportError: {e}")
 
 
+def calculate_pair_trade_condition(bot):
+    # z-scroe: tells us how many std dev a number is above or blow the mean.
+    # g_upperid = "2330"
+    # g_lowerid = "00664R"
+
+    # Thresholds
+    Z_SPREAD_THRESHOLD = 1.0
+    Z_THRESHOLD = 2  # Significant deviation threshold
+    RSI_THRESHOLD = 30  # Oversold threshold
+    # contract = bot.api.Contracts.Indexs.TSE.TSE001
+    # TSE001_snapshot = bot.api.snapshots([contract])
+    # current_index = TSE001_snapshot[0].close
+    mkt_chg = bot.api.snapshots([bot.api.Contracts.Indexs.TSE.TSE001])[0].change_rate
+    mean_std = misc.pickle_read("mean_std.pkl")
+    zscore = {}
+    snapshots = bot.get_snapshots(symbols)
+
+    # Calculate Z-Scores
+    for k in mean_std["mean"]:
+        zscore[k] = (snapshots[k].change_rate - mean_std["mean"][k]) / mean_std["std"][k]
+
+    # Check Z-Scores for significant deviation
+    zspread = abs(zscore[g_upperid]) - abs(zscore[g_lowerid])
+    print(f"market_chg: {mkt_chg}, z-spread: {zspread}")
+    if mkt_chg > 0:  # up
+        if zspread < -(Z_SPREAD_THRESHOLD + 0.3):
+            return True
+    elif mkt_chg < 0:  # Market goes down (handle this scenario as needed)
+        if zspread > Z_SPREAD_THRESHOLD + 0.3:
+            return True
+    else:
+        # Market is unchanged (handle this scenario as needed)
+        # You can define specific conditions for unchanged market
+        return False
+
+
 def calculate_allocate(total_money: int, snapshots: dict, weights: dict) -> dict:
     g_lowerid_shares = int(total_money * weights[g_lowerid] // snapshots[g_lowerid])
     # Adjust shares of the fixed stock to be a multiple of 1000
@@ -70,6 +106,26 @@ def calculate_allocate(total_money: int, snapshots: dict, weights: dict) -> dict
         g_lowerid: g_lowerid_shares,
     }
 
+
+def chk_buy_cond(bot, betas):
+    threshold = 0.1425 * 2 * 0.38 + 0.3
+    mkt_chg = bot.api.snapshots([bot.api.Contracts.Indexs.TSE.TSE001])[0].change_rate
+    expected_g_lowerid_chg = betas[g_lowerid+'_tw'] * mkt_chg
+    expected_g_upperid_chg = betas[g_upperid+'_tw'] * mkt_chg
+    spread = abs(bot.snapshots[g_upperid].change_rate - expected_g_upperid_chg) + abs(
+        bot.snapshots[g_lowerid].change_rate - expected_g_lowerid_chg
+    )
+
+    if (
+        bot.snapshots[g_upperid].change_rate < expected_g_upperid_chg
+        and bot.snapshots[g_lowerid] < expected_g_lowerid_chg
+    ):
+        if spread > threshold:
+            return True
+    else:
+        return False
+
+
 #######################################################################################################################
 #######################################################################################################################
 # main fn. Zero-Beta Portfolio: This portfolio is constructed to have zero systematic risk, meaning its returns are not influenced by market movements.
@@ -84,12 +140,14 @@ symbols = [g_upperid.upper(), g_lowerid.upper()]
 
 
 def main():
-    expected_profit = -38
+    expected_profit = -270
     # fees = 0.385 / 100
     fees = 0.4 / 100
     total_amount = 30000
     weights = misc.pickle_read("weights.pkl")
     betas = misc.pickle_read("betas.pkl")
+    # mean_std = misc.pickle_read("mean_std.pkl")
+
     # weights = {g_upperid: 0.425652829531973, g_lowerid: 0.5743471704680267}
     mutexDict = {symbols[0]: Lock(), symbols[1]: Lock()}
     cooldown = 15
@@ -120,16 +178,20 @@ def main():
                     break
 
                 # 3. fetch latest market snapshots
-                bot.snapshots = bot.get_snapshots()
+                bot.snapshots = bot.get_snapshots(symbols)
                 [print(f"Close price for {code}: {snapshot.close}") for code, snapshot in bot.snapshots.items()]
 
+                a = calculate_pair_trade_condition(bot)
+                theory_prices = bot.get_theory_prices(betas=betas, snapshots=bot.snapshots)
+                [print(f"theory: {theory_prices}, snapshots: {bot.snapshots[symbol].close}") for symbol in symbols]
+                
                 # 4. compute profit
                 current_net_profit = sum(
                     misc.calculate_profit(
                         bot.bought_prices[symbol],
                         bot.snapshots[symbol].close,
                         bot.pos[symbol],
-                        tax_rate=1 / 1000 if bot.api.Contracts.Stocks.TSE[symbol].category == "00" else 3 / 1000,
+                        tax_rate= bot.tax_rate
                     )
                     for symbol in bot.pos.keys()
                     if bot.pos[symbol] > 0
@@ -196,7 +258,7 @@ def main():
     # empty hand, ask if want to buy
     elif misc.get_user_confirmation(question="buy"):
         bot.bought_prices = {}
-        bot.snapshots = bot.get_snapshots()
+        bot.snapshots = bot.get_snapshots(symbols)
         stk_prices = [{k: v.close} for k, v in bot.snapshots.items()]
         bot.shares_to_buy = calculate_allocate(total_amount, stk_prices, weights)
         # bot.pos = {symbol: bot.get_position_qty(symbol) for symbol in symbols}
@@ -206,21 +268,24 @@ def main():
             # 1. cancel open orders
             bot.cancelOrders()
             # 2. get snapshots
-            bot.snapshots = bot.get_snapshots()
+            bot.snapshots = bot.get_snapshots(symbols)
             # 3. get pos
             # bot.pos = {symbol: bot.geyt_position_qty(symbol) for symbol in symbols}
-            if abs(bot.snapshots[g_upperid].change_rate) < bot.snapshots[g_lowerid].change_rate:
-                cond1 = False
-            else:
-                diff_pct_change = abs(bot.snapshots[g_upperid].change_rate + bot.snapshots[g_lowerid].change_rate)
-                cond1 = diff_pct_change > 0.1425 * 2 * 0.38 + 0.3
-                print(f"diff_pct_change: {diff_pct_change}")
+
+            # if abs(bot.snapshots[g_upperid].change_rate) < bot.snapshots[g_lowerid].change_rate:
+            #     cond1 = False
+            # else:
+            #     diff_pct_change = abs(bot.snapshots[g_upperid].change_rate + bot.snapshots[g_lowerid].change_rate)
+            #     cond1 = diff_pct_change > 0.1425 * 2 * 0.38 + 0.3
+            #     print(f"diff_pct_change: {diff_pct_change}")
+
             # cond1 = bot.snapshots[g_upperid].change_rate < 0 and bot.snapshots[g_lowerid].change_rate <= 0
             theory_prices = bot.get_theory_prices(betas=betas, snapshots=bot.snapshots)
             # cond2 = bot.snapshots[g_lowerid].close <= theory_prices[g_lowerid]
-            cond2 = all(bot.snapshots[symbol].close < theory_prices[symbol] for symbol in symbols)
+            # cond2 = all(bot.snapshots[symbol].close < theory_prices[symbol] for symbol in symbols)
             [print(f"theory: {theory_prices}, snapshots: {bot.snapshots[symbol].close}") for symbol in symbols]
-            if cond1 or cond2:
+
+            if chk_buy_cond(bot, betas=betas):
                 [
                     print(f"shares_to_buy:{bot.shares_to_buy}, @price {bot.snapshots[symbol].close}")
                     for symbol in symbols
