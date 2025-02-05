@@ -65,8 +65,10 @@ def calculate_pair_trade_condition(bot):
     snapshots = bot.get_snapshots(symbols)
 
     # Calculate Z-Scores
-    for k in mean_std["mean"]:
-        zscore[k] = (snapshots[k].change_rate - mean_std["mean"][k]) / mean_std["std"][k]
+    for symbol in symbols:
+        zscore[symbol] = (snapshots[symbol].change_rate - mean_std["mean"][symbol + "_tw"]) / mean_std["std"][
+            symbol + "_tw"
+        ]
 
     # Check Z-Scores for significant deviation
     zspread = abs(zscore[g_upperid]) - abs(zscore[g_lowerid])
@@ -107,23 +109,53 @@ def calculate_allocate(total_money: int, snapshots: dict, weights: dict) -> dict
     }
 
 
-def chk_buy_cond(bot, betas):
-    threshold = 0.1425 * 2 * 0.38 + 0.3
-    mkt_chg = bot.api.snapshots([bot.api.Contracts.Indexs.TSE.TSE001])[0].change_rate
-    expected_g_lowerid_chg = betas[g_lowerid+'_tw'] * mkt_chg
-    expected_g_upperid_chg = betas[g_upperid+'_tw'] * mkt_chg
-    spread = abs(bot.snapshots[g_upperid].change_rate - expected_g_upperid_chg) + abs(
-        bot.snapshots[g_lowerid].change_rate - expected_g_lowerid_chg
+def buy_cond2(bot, theory_price):
+    current_net_profit = sum(
+        misc.calculate_profit(
+            buy_price=bot.snapshots[symbol].sell_price,  # ask
+            sell_price=theory_price[symbol],  # bot.snapshots[symbol].buy_price,
+            quantity=bot.shares_to_buy[symbol],  # bot.pos[symbol],
+            tax_rate=bot.tax_rate[symbol],
+        )
+        for symbol in symbols
     )
+    print(f"estimated profit: {current_net_profit}")
+    # 2% return in 20 trading day(~one month)
+    return current_net_profit >= expected_profit
 
-    if (
-        bot.snapshots[g_upperid].change_rate < expected_g_upperid_chg
-        and bot.snapshots[g_lowerid] < expected_g_lowerid_chg
-    ):
-        if spread > threshold:
-            return True
-    else:
-        return False
+
+def buy_cond1(bot, betas):
+    ratio = {}
+    ratio = {symbol: bot.snapshots[symbol].close / bot.snapshots[symbol].sell_price for symbol in symbols}
+    THRESHOLD = 0.1
+    TRANSACTION_COST = (0.1425 * 2) + 0.3
+    # THRESHOLD = 0.1425 * 2 * 0.38 + 0.3
+    buy_sell_vol_ratios = {
+        symbol: bot.snapshots[symbol].buy_volume / bot.snapshots[symbol].sell_volume for symbol in symbols
+    }
+    print("b/s ratios:", buy_sell_vol_ratios)
+    mkt_chg = bot.api.snapshots([bot.api.Contracts.Indexs.TSE.TSE001])[0].change_rate
+    expected_chg_rate = {symbol: betas[f"{symbol}_tw"] * mkt_chg for symbol in symbols}
+    spread = sum(
+        abs(bot.snapshots[symbol].change_rate - expected_chg_rate[symbol]) * ratio[symbol] for symbol in symbols
+    )
+    print(f"Spread: {spread}, Threshold: {THRESHOLD+TRANSACTION_COST}")
+    print(f"market change rate: {mkt_chg}")
+    [
+        print(f"{s}-actual chg rate: {bot.snapshots[s].change_rate}, expected chg rate: {expected_chg_rate[s]}")
+        for s in symbols
+    ]
+    return (
+        spread > (THRESHOLD + TRANSACTION_COST)
+        and all(value > 1 for value in buy_sell_vol_ratios.values())  # and buy_sell_vol_ratio[g_upperid] > 1
+        and max(
+            abs(bot.snapshots[g_upperid].change_rate - expected_chg_rate[g_upperid]),
+            abs(bot.snapshots[g_lowerid].change_rate - expected_chg_rate[g_lowerid]),
+        )
+        > THRESHOLD
+        # and bot.snapshots[g_upperid].change_rate <= expected_chg_rate[g_upperid]
+        # and bot.snapshots[g_lowerid].change_rate <= expected_chg_rate[g_lowerid]
+    )
 
 
 #######################################################################################################################
@@ -137,19 +169,16 @@ g_upperid = "2330"
 # g_upperid = "0052"
 g_lowerid = "00664R"
 symbols = [g_upperid.upper(), g_lowerid.upper()]
-
+backTest = True
+# backTest = False
+total_amount = 30000
+expected_profit = total_amount * 0.2 / 100
 
 def main():
-    expected_profit = -270
-    # fees = 0.385 / 100
-    fees = 0.4 / 100
-    total_amount = 30000
     weights = misc.pickle_read("weights.pkl")
     betas = misc.pickle_read("betas.pkl")
     # mean_std = misc.pickle_read("mean_std.pkl")
-
     # weights = {g_upperid: 0.425652829531973, g_lowerid: 0.5743471704680267}
-    mutexDict = {symbols[0]: Lock(), symbols[1]: Lock()}
     cooldown = 15
     # sleep to n seconds
     til_second = 10
@@ -157,8 +186,9 @@ def main():
     bot = mysj.Bot(symbols=symbols, sim=False)
     bot.pos = {symbol: bot.get_position_qty(symbol) for symbol in symbols}
     print(bot.pos)
+
     # todo: maybe just one stock has value, so need to save taken_profit in case not all stocks
-    if any(bot.pos.values()):
+    if any(bot.pos.values()) or backTest == True:
         # bot.bought_prices = {"2330": 1110, "00664R": 3.63}
         # misc.pickle_dump("bought_prices.pkl", bot.bought_prices)
 
@@ -174,24 +204,48 @@ def main():
 
                 # 2. update current positions
                 bot.pos = {symbol: bot.get_position_qty(symbol) for symbol in symbols}
+
+                if backTest:
+                    bot.pos = bot.shares_to_buy
+
                 if all(value == 0 for value in bot.pos.values()):
                     break
 
                 # 3. fetch latest market snapshots
                 bot.snapshots = bot.get_snapshots(symbols)
-                [print(f"Close price for {code}: {snapshot.close}") for code, snapshot in bot.snapshots.items()]
 
-                a = calculate_pair_trade_condition(bot)
+                # a = calculate_pair_trade_condition(bot)
                 theory_prices = bot.get_theory_prices(betas=betas, snapshots=bot.snapshots)
-                [print(f"theory: {theory_prices}, snapshots: {bot.snapshots[symbol].close}") for symbol in symbols]
-                
+                [
+                    print(
+                        f"theory: {theory_prices[symbol]}, close: {bot.snapshots[symbol].close}, bid price: {bot.snapshots[symbol].buy_price}"
+                    )
+                    for symbol in symbols
+                ]
+
+                buy_sell_vol_ratio = {
+                    symbol: bot.snapshots[symbol].buy_volume / bot.snapshots[symbol].sell_volume for symbol in symbols
+                }
+                selling_price = {}
+                for symbol in symbols:
+                    selling_price[symbol] = (
+                        bot.snapshots[symbol].close
+                        if buy_sell_vol_ratio[symbol] > 1  # and bot.snapshots[symbol].volume_ratio > 1
+                        else bot.snapshots[symbol].buy_price
+                    )
+                    print(f"bought price: {symbol}: {bot.bought_prices[symbol]}")
+                    # Volume Ratio= Average Trading Volume/Current Trading Volume, confirm trends(up or down)
+                    print(
+                        f"buy/sell vol ratio: {buy_sell_vol_ratio[symbol]}, vol ratio:{bot.snapshots[symbol].volume_ratio}"
+                    )
+
                 # 4. compute profit
                 current_net_profit = sum(
                     misc.calculate_profit(
                         bot.bought_prices[symbol],
-                        bot.snapshots[symbol].close,
+                        selling_price[symbol],  # bot.snapshots[symbol].buy_price,
                         bot.pos[symbol],
-                        tax_rate= bot.tax_rate
+                        tax_rate=bot.tax_rate[symbol],
                     )
                     for symbol in bot.pos.keys()
                     if bot.pos[symbol] > 0
@@ -202,16 +256,24 @@ def main():
                 # todo: if partial filled, net_profit should be recalucated!!!
                 if current_net_profit >= expected_profit - bot.taken_profit:
                     # 5. place sell orders
-                    for symbol in symbols:
-                        if bot.pos[symbol] > 0:
-                            bot.trades[symbol] = bot.sell(
-                                symbol=symbol,
-                                quantity=bot.pos[symbol],
-                                price=bot.snapshots[symbol].close,  # -bot.tick_value[symbol],
-                            )
-                    time.sleep(50)
+                    if backTest == True:
+                        [
+                            print(f"sell {symbol}, qty:{bot.pos[symbol]}, @price {selling_price[symbol]}")
+                            for symbol in symbols
+                        ]
+                        break
+                    else:
+                        for symbol in symbols:
+                            if bot.pos[symbol] > 0:
+                                bot.trades[symbol] = bot.sell(
+                                    symbol=symbol,
+                                    quantity=bot.pos[symbol],
+                                    price=bot.snapshots[symbol].buy_price,  # bid price,
+                                )
+                                print(f"sell {symbol}, qty:{bot.pos[symbol]}, @price {selling_price[symbol]}")
+                        time.sleep(50)
                 # net profit less than expectattion and no sell transaction has been done, at this point, refill any previsouly buy shortage.
-                elif bot.taken_profit == 0:
+                elif bot.taken_profit == 0 and backTest == False:
                     prev_unfilled_shares = {symbol: bot.shares_to_buy[symbol] - bot.pos[symbol] for symbol in symbols}
                     # key_of_zero = next((k for k, v in bot.pos.items() if v == 0), None)
                     # if key_of_zero is not None and bot.taken_profit == 0:
@@ -220,15 +282,17 @@ def main():
                     if any(prev_unfilled_shares.values()):
                         for symbol in symbols:
                             cond1 = prev_unfilled_shares[symbol] > 0
-                            cond2 = bot.snapshots[symbol].close <= bot.bought_prices[symbol] - bot.tick_value[symbol]
+                            cond2 = (
+                                bot.snapshots[symbol].buy_price <= bot.bought_prices[symbol] - bot.tick_value[symbol]
+                            )
                             # cond2 = bot.snapshots[symbol].change_rate <= 0
                             if cond1 and cond2:
                                 bot.trades[symbol] = bot.buy(
                                     symbol=symbol,
                                     quantity=prev_unfilled_shares[symbol],
-                                    price=bot.snapshots[symbol].close,
+                                    price=bot.snapshots[symbol].buy_price,
                                 )
-                                print(f"buy0 {symbol} {prev_unfilled_shares[symbol]}@{bot.snapshots[symbol].close}")
+                                print(f"buy0 {symbol} {prev_unfilled_shares[symbol]}@{bot.snapshots[symbol].buy_price}")
                         time.sleep(20)
 
                 current_time = time.time()
@@ -259,7 +323,7 @@ def main():
     elif misc.get_user_confirmation(question="buy"):
         bot.bought_prices = {}
         bot.snapshots = bot.get_snapshots(symbols)
-        stk_prices = [{k: v.close} for k, v in bot.snapshots.items()]
+        stk_prices = {k: v.close for k, v in bot.snapshots.items()}
         bot.shares_to_buy = calculate_allocate(total_amount, stk_prices, weights)
         # bot.pos = {symbol: bot.get_position_qty(symbol) for symbol in symbols}
         # always break at here to find a good pair of prices before submitting!!!
@@ -269,9 +333,6 @@ def main():
             bot.cancelOrders()
             # 2. get snapshots
             bot.snapshots = bot.get_snapshots(symbols)
-            # 3. get pos
-            # bot.pos = {symbol: bot.geyt_position_qty(symbol) for symbol in symbols}
-
             # if abs(bot.snapshots[g_upperid].change_rate) < bot.snapshots[g_lowerid].change_rate:
             #     cond1 = False
             # else:
@@ -283,34 +344,45 @@ def main():
             theory_prices = bot.get_theory_prices(betas=betas, snapshots=bot.snapshots)
             # cond2 = bot.snapshots[g_lowerid].close <= theory_prices[g_lowerid]
             # cond2 = all(bot.snapshots[symbol].close < theory_prices[symbol] for symbol in symbols)
-            [print(f"theory: {theory_prices}, snapshots: {bot.snapshots[symbol].close}") for symbol in symbols]
+            [
+                print(
+                    f"theory: {theory_prices[symbol]}, close: {bot.snapshots[symbol].close}, ask price: {bot.snapshots[symbol].sell_price}"
+                )
+                for symbol in symbols
+            ]
 
-            if chk_buy_cond(bot, betas=betas):
+            if buy_cond1(bot, betas=betas) or buy_cond2(bot, theory_prices):
                 [
-                    print(f"shares_to_buy:{bot.shares_to_buy}, @price {bot.snapshots[symbol].close}")
+                    print(
+                        f"buy {symbol}, qty:{bot.shares_to_buy[symbol]}, @price {bot.snapshots[symbol].close[symbol]}"
+                    )
                     for symbol in symbols
                 ]
-                for symbol in symbols:
-                    bot.trades[symbol] = bot.buy(
-                        symbol=symbol,
-                        quantity=bot.shares_to_buy[symbol],
-                        price=bot.snapshots[symbol].close,
-                    )
-
-                try:
-                    # wait till all buy orders are filled.
-                    bot.wait_till_filled()
-                    misc.pickle_dump("bought_prices.pkl", bot.bought_prices)
-                    bot.logout
+                if backTest == True:
+                    # assume all filled immediately!
+                    misc.pickle_dump("bought_prices.pkl", {symbol: bot.snapshots[symbol].close for symbol in symbols})
                     break
-                except KeyboardInterrupt:
-                    print("\n my Ctrl-C detected. Exiting gracefully...")
-                    key_of_zero = next((k for k, v in bot.bought_prices.items() if v == 0), None)
-                    if any(bot.bought_prices.values()):
-                        bot.bought_prices[key_of_zero] = bot.snapshots[key_of_zero].close
+                else:
+                    for symbol in symbols:
+                        bot.trades[symbol] = bot.buy(
+                            symbol=symbol,
+                            quantity=bot.shares_to_buy[symbol],
+                            price=bot.snapshots[symbol].close,
+                        )
+                    try:
+                        # wait till all buy orders are filled.
+                        bot.wait_till_filled()
                         misc.pickle_dump("bought_prices.pkl", bot.bought_prices)
-                    bot.logout()
-                    exit()
+                        bot.logout
+                        break
+                    except KeyboardInterrupt:
+                        print("\n my Ctrl-C detected. Exiting gracefully...")
+                        key_of_zero = next((k for k, v in bot.bought_prices.items() if v == 0), None)
+                        if any(bot.bought_prices.values()):
+                            bot.bought_prices[key_of_zero] = bot.snapshots[key_of_zero].sell_price
+                            misc.pickle_dump("bought_prices.pkl", bot.bought_prices)
+                        bot.logout()
+                        exit()
 
             time.sleep(25)
             # Print a separator with a message
