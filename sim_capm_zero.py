@@ -172,7 +172,7 @@ symbols = [g_upperid.upper(), g_lowerid.upper()]
 backTest = True
 # backTest = False
 total_amount = 30000
-expected_profit = total_amount * 0.2 / 100
+expected_profit = total_amount * 0.02 / 20   # 2% profit per month(20 trading days)
 
 def main():
     weights = misc.pickle_read("weights.pkl")
