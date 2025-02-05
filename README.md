@@ -1,3 +1,8 @@
+!!! choose python 3.11.9 64-bit for env !!!
+
+data that's falling within one stanard deviation represents 68% of the data. if u are two std deviation above the mean, you are better than 95% of others; in other world, only 5% better than you.
+z-scroe: tells us how many std dev a number is above or blow the mean.
+
 github: 
     cd C:\mma
     git init
@@ -102,5 +107,17 @@ mongosh
     db.<collection>.drop()
     
 db.getCollection(collectionName).countDocuments()
+
+
+theory: 1129.0, close: 1125.0, sell price: 1130.0
+theory: 3.68, close: 3.66, sell price: 3.67
+Spread: 0.8371696636949753, Threshold: 0.585
+market change rate: 0.58
+2330-actual chg rate: 0.45, expected chg rate: 0.8036024065992879
+00664R-actual chg rate: -1.08, expected chg rate: -0.5935426335744907
+buy/sell vol ratio: 0.2525294239107991, vol ratio:0.26
+buy/sell vol ratio: 0.7217893217893218, vol ratio:1.04
+buy 2330, qty:9, @price 1125.0
+buy 00664R, qty:4000, @price 3.66
 
     
